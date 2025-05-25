@@ -153,6 +153,7 @@ def oauth_callback():
     
     auth_code = request.args.get('code')
     error = request.args.get('error')
+    state = request.args.get('state')  # Check if this is for worker
     
     if error:
         return f"OAuth error: {error}", 400
@@ -189,7 +190,31 @@ def oauth_callback():
             'scopes': SCOPES
         }
         
-        # Save credentials to persistent storage
+        # Check if this is for worker credentials
+        if state == 'worker_credentials':
+            # Return JSON for worker service
+            return f"""
+            <html>
+            <head><title>Worker Credentials</title></head>
+            <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px;">
+                <h2>🔐 Worker Service Credentials</h2>
+                <p>Copy this JSON and add it to your worker service environment variables:</p>
+                <p><strong>Key:</strong> GOOGLE_CREDENTIALS_JSON</p>
+                <p><strong>Value:</strong></p>
+                <textarea readonly style="width: 100%; height: 300px; font-family: monospace; font-size: 12px; padding: 10px; border: 1px solid #ccc;">{json.dumps(creds_data, indent=2)}</textarea>
+                <p><strong>Next steps:</strong></p>
+                <ol>
+                    <li>Copy the JSON above</li>
+                    <li>Go to Render Dashboard → vc-workflow-worker service → Environment</li>
+                    <li>Add GOOGLE_CREDENTIALS_JSON with the JSON as value</li>
+                    <li>Save changes to redeploy worker</li>
+                </ol>
+                <a href="/" style="background: #2563eb; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">Back to Dashboard</a>
+            </body>
+            </html>
+            """
+        
+        # Regular web service credentials
         save_credentials(creds_data)
         
         # Test the credentials
@@ -303,6 +328,178 @@ def api_credentials():
             'status': 'error',
             'error': str(e)
         })
+
+@app.route('/api/google/documents/<document_id>')
+def api_get_document(document_id):
+    """API endpoint for worker to get Google Doc content"""
+    try:
+        creds_data = load_credentials()
+        if not creds_data:
+            return jsonify({'error': 'No Google credentials available'}), 500
+            
+        creds = Credentials(
+            token=creds_data['token'],
+            refresh_token=creds_data.get('refresh_token'),
+            token_uri=creds_data['token_uri'],
+            client_id=creds_data['client_id'],
+            client_secret=creds_data['client_secret'],
+            scopes=creds_data['scopes']
+        )
+        
+        docs_service = build('docs', 'v1', credentials=creds)
+        doc = docs_service.documents().get(documentId=document_id).execute()
+        
+        # Extract text content
+        content = ""
+        for element in doc.get('body', {}).get('content', []):
+            if 'paragraph' in element:
+                for text_run in element['paragraph'].get('elements', []):
+                    if 'textRun' in text_run:
+                        content += text_run['textRun'].get('content', '')
+        
+        return jsonify({
+            'document_id': document_id,
+            'title': doc.get('title', 'Untitled'),
+            'content': content
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting document {document_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/google/drive/files')
+def api_list_drive_files():
+    """API endpoint for worker to list Drive files"""
+    try:
+        creds_data = load_credentials()
+        if not creds_data:
+            return jsonify({'error': 'No Google credentials available'}), 500
+            
+        creds = Credentials(
+            token=creds_data['token'],
+            refresh_token=creds_data.get('refresh_token'),
+            token_uri=creds_data['token_uri'],
+            client_id=creds_data['client_id'],
+            client_secret=creds_data['client_secret'],
+            scopes=creds_data['scopes']
+        )
+        
+        drive_service = build('drive', 'v3', credentials=creds)
+        
+        # Get query parameters
+        folder_id = request.args.get('folder_id', os.environ.get('GOOGLE_DRIVE_FOLDER_ID'))
+        modified_since = request.args.get('modified_since')
+        
+        query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document'"
+        if modified_since:
+            query += f" and modifiedTime > '{modified_since}'"
+            
+        results = drive_service.files().list(
+            q=query,
+            orderBy='modifiedTime desc',
+            fields="files(id,name,modifiedTime,createdTime)"
+        ).execute()
+        
+        return jsonify({
+            'files': results.get('files', [])
+        })
+        
+    except Exception as e:
+        logger.error(f"Error listing drive files: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/google/gmail/draft', methods=['POST'])
+def api_create_gmail_draft():
+    """API endpoint for worker to create Gmail draft"""
+    try:
+        creds_data = load_credentials()
+        if not creds_data:
+            return jsonify({'error': 'No Google credentials available'}), 500
+            
+        creds = Credentials(
+            token=creds_data['token'],
+            refresh_token=creds_data.get('refresh_token'),
+            token_uri=creds_data['token_uri'],
+            client_id=creds_data['client_id'],
+            client_secret=creds_data['client_secret'],
+            scopes=creds_data['scopes']
+        )
+        
+        gmail_service = build('gmail', 'v1', credentials=creds)
+        
+        # Get email data from request
+        email_data = request.get_json()
+        to_email = email_data.get('to')
+        subject = email_data.get('subject')
+        body = email_data.get('body')
+        
+        if not all([to_email, subject, body]):
+            return jsonify({'error': 'Missing required fields: to, subject, body'}), 400
+        
+        # Create email message
+        message = f"""To: {to_email}
+Subject: {subject}
+
+{body}
+"""
+        
+        # Create draft
+        draft = gmail_service.users().drafts().create(
+            userId='me',
+            body={'message': {'raw': message.encode('utf-8').decode('ascii', errors='ignore')}}
+        ).execute()
+        
+        return jsonify({
+            'draft_id': draft['id'],
+            'message': 'Draft created successfully'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error creating Gmail draft: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/affinity/deals', methods=['POST'])
+def api_create_affinity_deal():
+    """API endpoint for worker to create Affinity deal"""
+    try:
+        # Get deal data from request
+        deal_data = request.get_json()
+        
+        affinity_api_key = os.environ.get('AFFINITY_API_KEY')
+        if not affinity_api_key:
+            return jsonify({'error': 'Affinity API key not configured'}), 500
+        
+        # Create deal in Affinity
+        headers = {
+            'Authorization': f'Basic {affinity_api_key}',
+            'Content-Type': 'application/json'
+        }
+        
+        # Map worker data to Affinity format
+        affinity_deal = {
+            'list_id': int(os.environ.get('AFFINITY_LIST_ID', 0)),
+            'entity_id': deal_data.get('entity_id'),
+            'name': deal_data.get('name'),
+            'stage': deal_data.get('stage', 'Prospecting')
+        }
+        
+        response = requests.post(
+            'https://api.affinity.co/list-entries',
+            headers=headers,
+            json=affinity_deal
+        )
+        
+        if response.status_code == 201:
+            return jsonify({
+                'deal_id': response.json().get('id'),
+                'message': 'Deal created successfully'
+            })
+        else:
+            return jsonify({'error': f'Affinity API error: {response.status_code}'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error creating Affinity deal: {e}")
+        return jsonify({'error': str(e)}), 500
 
 def save_credentials(creds_data):
     """Save credentials to persistent storage"""
