@@ -613,7 +613,7 @@ def api_create_affinity_deal():
         
         logger.info(f"Affinity API response: {response.status_code} - {response.text}")
         
-        if response.status_code == 201:
+        if response.status_code in [200, 201]:
             return jsonify({
                 'deal_id': response.json().get('id'),
                 'message': 'Deal created successfully'
@@ -622,8 +622,8 @@ def api_create_affinity_deal():
             error_details = {
                 'status': response.status_code,
                 'response': response.text,
-                'headers_sent': dict(headers),
-                'data_sent': affinity_deal
+                'org_data': org_data,
+                'deal_data': deal_data if 'deal_data' in locals() else None
             }
             logger.error(f"Affinity API error: {error_details}")
             return jsonify({
