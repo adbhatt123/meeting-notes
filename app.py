@@ -467,6 +467,23 @@ Subject: {subject}
         logger.error(f"Error creating Gmail draft: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/debug/env')
+def api_debug_env():
+    """Debug environment variables"""
+    try:
+        affinity_key = os.environ.get('AFFINITY_API_KEY')
+        list_id = os.environ.get('AFFINITY_LIST_ID')
+        
+        return jsonify({
+            'affinity_key_present': bool(affinity_key),
+            'affinity_key_length': len(affinity_key) if affinity_key else 0,
+            'list_id_present': bool(list_id),
+            'list_id_value': list_id,
+            'all_env_keys': [k for k in os.environ.keys() if 'AFFINITY' in k]
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/affinity/test')
 def api_test_affinity():
     """Test Affinity API connectivity"""
