@@ -467,6 +467,33 @@ Subject: {subject}
         logger.error(f"Error creating Gmail draft: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/affinity/test')
+def api_test_affinity():
+    """Test Affinity API connectivity"""
+    try:
+        affinity_api_key = os.environ.get('AFFINITY_API_KEY')
+        if not affinity_api_key:
+            return jsonify({'error': 'Affinity API key not configured'}), 500
+        
+        # Test basic API connectivity by listing lists
+        import base64
+        auth_string = base64.b64encode(f'{affinity_api_key}:'.encode()).decode()
+        headers = {
+            'Authorization': f'Basic {auth_string}',
+            'Content-Type': 'application/json'
+        }
+        
+        response = requests.get('https://api.affinity.co/lists', headers=headers)
+        
+        return jsonify({
+            'status': response.status_code,
+            'lists_available': response.status_code == 200,
+            'response': response.text[:500]  # First 500 chars
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/affinity/deals', methods=['POST'])
 def api_create_affinity_deal():
     """API endpoint for worker to create Affinity deal"""
@@ -487,21 +514,66 @@ def api_create_affinity_deal():
             'Content-Type': 'application/json'
         }
         
-        # Map worker data to Affinity format
-        affinity_deal = {
-            'list_id': int(os.environ.get('AFFINITY_LIST_ID', 0)),
-            'entity_id': deal_data.get('entity_id'),
-            'name': deal_data.get('name'),
-            'stage': deal_data.get('stage', 'Prospecting')
-        }
+        # Get list ID
+        list_id = os.environ.get('AFFINITY_LIST_ID')
+        if not list_id:
+            return jsonify({'error': 'Affinity list ID not configured'}), 500
         
-        logger.info(f"Creating Affinity deal: {affinity_deal}")
+        # Extract company and founder info
+        deal_name = deal_data.get('name', 'Unknown Deal')
         
-        response = requests.post(
-            'https://api.affinity.co/list-entries',
-            headers=headers,
-            json=affinity_deal
-        )
+        # First, try to create or find a person/organization
+        # For simplicity, we'll try to create a list entry directly with available data
+        logger.info(f"Attempting to create Affinity list entry for: {deal_name}")
+        
+        # Try multiple approaches for Affinity API
+        approaches = [
+            # Approach 1: Simple list entry creation
+            {
+                'url': f'https://api.affinity.co/lists/{list_id}/list-entries',
+                'data': {'name': deal_name}
+            },
+            # Approach 2: Traditional list-entries endpoint
+            {
+                'url': 'https://api.affinity.co/list-entries',
+                'data': {
+                    'list_id': int(list_id),
+                    'name': deal_name
+                }
+            }
+        ]
+        
+        success = False
+        last_error = None
+        
+        for i, approach in enumerate(approaches, 1):
+            logger.info(f"Trying Affinity approach {i}: {approach['url']}")
+            
+            response = requests.post(
+                approach['url'],
+                headers=headers,
+                json=approach['data']
+            )
+            
+            logger.info(f"Approach {i} response: {response.status_code} - {response.text}")
+            
+            if response.status_code in [200, 201]:
+                success = True
+                break
+            else:
+                last_error = {
+                    'status': response.status_code,
+                    'response': response.text,
+                    'url': approach['url'],
+                    'data': approach['data']
+                }
+        
+        if not success:
+            logger.error(f"All Affinity approaches failed. Last error: {last_error}")
+            return jsonify({
+                'error': 'Failed to create Affinity entry with all approaches',
+                'details': last_error
+            }), 500
         
         logger.info(f"Affinity API response: {response.status_code} - {response.text}")
         
