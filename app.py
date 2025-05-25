@@ -493,10 +493,9 @@ def api_test_affinity():
             return jsonify({'error': 'Affinity API key not configured'}), 500
         
         # Test basic API connectivity by listing lists
-        import base64
-        auth_string = base64.b64encode(f'{affinity_api_key}:'.encode()).decode()
+        # Affinity API v2 uses Bearer authentication, not Basic
         headers = {
-            'Authorization': f'Basic {auth_string}',
+            'Authorization': f'Bearer {affinity_api_key}',
             'Content-Type': 'application/json'
         }
         
@@ -523,11 +522,9 @@ def api_create_affinity_deal():
             return jsonify({'error': 'Affinity API key not configured'}), 500
         
         # Create deal in Affinity
-        # Affinity uses Basic auth with API key as username, empty password
-        import base64
-        auth_string = base64.b64encode(f'{affinity_api_key}:'.encode()).decode()
+        # Affinity API v2 uses Bearer authentication
         headers = {
-            'Authorization': f'Basic {auth_string}',
+            'Authorization': f'Bearer {affinity_api_key}',
             'Content-Type': 'application/json'
         }
         
