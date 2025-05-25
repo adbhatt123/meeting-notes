@@ -500,7 +500,7 @@ def api_test_affinity():
             'Content-Type': 'application/json'
         }
         
-        response = requests.get('https://api.affinity.co/lists', headers=headers)
+        response = requests.get('https://api.affinity.co/v2/lists', headers=headers)
         
         return jsonify({
             'status': response.status_code,
@@ -543,14 +543,19 @@ def api_create_affinity_deal():
         # For simplicity, we'll try to create a list entry directly with available data
         logger.info(f"Attempting to create Affinity list entry for: {deal_name}")
         
-        # Try multiple approaches for Affinity API
+        # Try multiple approaches for Affinity API v2
         approaches = [
-            # Approach 1: Simple list entry creation
+            # Approach 1: v2 API list entries
             {
-                'url': f'https://api.affinity.co/lists/{list_id}/list-entries',
+                'url': f'https://api.affinity.co/v2/lists/{list_id}/list-entries',
                 'data': {'name': deal_name}
             },
-            # Approach 2: Traditional list-entries endpoint
+            # Approach 2: v2 API organizations (if it's a company)
+            {
+                'url': 'https://api.affinity.co/v2/organizations',
+                'data': {'name': deal_name}
+            },
+            # Approach 3: Legacy v1 endpoint (fallback)
             {
                 'url': 'https://api.affinity.co/list-entries',
                 'data': {
