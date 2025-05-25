@@ -28,7 +28,6 @@ REDIRECT_URI = f"{RENDER_EXTERNAL_URL}/oauth/callback"
 
 SCOPES = [
     'https://www.googleapis.com/auth/gmail.compose',
-    'https://www.googleapis.com/auth/gmail.drafts',
     'https://www.googleapis.com/auth/drive.readonly',
     'https://www.googleapis.com/auth/documents.readonly'
 ]
