@@ -1,0 +1,72 @@
+services:
+  # Web Service for OAuth and Dashboard
+  - type: web
+    name: vc-workflow-web
+    runtime: python3
+    startCommand: "gunicorn app:app"
+    plan: starter
+    healthCheckPath: /api/test
+    env:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: SECRET_KEY
+        generateValue: true
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_DRIVE_FOLDER_ID
+        sync: false
+      - key: AFFINITY_API_KEY
+        sync: false
+      - key: AFFINITY_PIPELINE_ID
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: FROM_EMAIL
+        sync: false
+      - key: FROM_NAME
+        sync: false
+      - key: RENDER_EXTERNAL_URL
+        value: ${{RENDER_EXTERNAL_URL}}
+    buildCommand: pip install -r requirements.txt
+    disk:
+      name: vc-workflow-data
+      mountPath: /opt/render/project/data
+      sizeGB: 1
+
+  # Background Worker Service
+  - type: worker
+    name: vc-workflow-worker
+    runtime: python3
+    startCommand: "python worker.py"
+    plan: starter
+    env:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: GOOGLE_DRIVE_FOLDER_ID
+        sync: false
+      - key: AFFINITY_API_KEY
+        sync: false
+      - key: AFFINITY_PIPELINE_ID
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: FROM_EMAIL
+        sync: false
+      - key: FROM_NAME
+        sync: false
+      - key: CHECK_INTERVAL_MINUTES
+        value: 10
+    buildCommand: pip install -r requirements.txt
+    disk:
+      name: vc-workflow-data
+      mountPath: /opt/render/project/data
+      sizeGB: 1
+
+# Database for persistence (optional upgrade)
+databases:
+  - name: vc-workflow-db
+    databaseName: vc_workflow
+    user: vc_user
+    plan: starter
