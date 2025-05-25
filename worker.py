@@ -62,17 +62,39 @@ class VCWorkflowWorker:
         logger.info("Initializing VC Workflow Worker services...")
         
         try:
-            # Initialize Anthropic
+            # Initialize Anthropic with proxy-compatible setup
             if self.config['ANTHROPIC_API_KEY']:
                 try:
-                    self.anthropic = Anthropic(api_key=self.config['ANTHROPIC_API_KEY'])
-                    logger.info("✅ Anthropic AI service ready")
+                    import anthropic
+                    import httpx
+                    
+                    # Create custom HTTP client that handles proxies properly
+                    http_client = httpx.Client(
+                        timeout=60.0,
+                        follow_redirects=True
+                    )
+                    
+                    # Initialize Anthropic with custom HTTP client
+                    self.anthropic = anthropic.Anthropic(
+                        api_key=self.config['ANTHROPIC_API_KEY'],
+                        http_client=http_client
+                    )
+                    logger.info("✅ Anthropic AI service ready (with proxy support)")
                 except Exception as e:
-                    logger.error(f"❌ Anthropic initialization failed: {e}")
-                    # Fallback initialization
-                    self.anthropic = Anthropic(api_key=self.config['ANTHROPIC_API_KEY'])
+                    logger.error(f"❌ Anthropic initialization with httpx failed: {e}")
+                    # Fallback to basic initialization
+                    try:
+                        import anthropic
+                        self.anthropic = anthropic.Anthropic(
+                            api_key=self.config['ANTHROPIC_API_KEY']
+                        )
+                        logger.info("✅ Anthropic AI service ready (basic)")
+                    except Exception as e2:
+                        logger.error(f"❌ Anthropic basic initialization also failed: {e2}")
+                        self.anthropic = None
             else:
                 logger.error("❌ ANTHROPIC_API_KEY not configured")
+                self.anthropic = None
             
             # Initialize Google services
             creds_data = self.load_google_credentials()
