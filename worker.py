@@ -64,8 +64,13 @@ class VCWorkflowWorker:
         try:
             # Initialize Anthropic
             if self.config['ANTHROPIC_API_KEY']:
-                self.anthropic = Anthropic(api_key=self.config['ANTHROPIC_API_KEY'])
-                logger.info("✅ Anthropic AI service ready")
+                try:
+                    self.anthropic = Anthropic(api_key=self.config['ANTHROPIC_API_KEY'])
+                    logger.info("✅ Anthropic AI service ready")
+                except Exception as e:
+                    logger.error(f"❌ Anthropic initialization failed: {e}")
+                    # Fallback initialization
+                    self.anthropic = Anthropic(api_key=self.config['ANTHROPIC_API_KEY'])
             else:
                 logger.error("❌ ANTHROPIC_API_KEY not configured")
             
@@ -94,17 +99,20 @@ class VCWorkflowWorker:
     def load_google_credentials(self):
         """Load Google OAuth credentials"""
         try:
-            credentials_file = '/opt/render/project/data/google_drive_token.json'
+            # Check multiple possible locations
+            possible_paths = [
+                '/opt/render/project/data/google_drive_token.json',
+                'google_drive_token.json',
+                '/tmp/google_drive_token.json'
+            ]
             
-            if os.path.exists(credentials_file):
-                with open(credentials_file, 'r') as f:
-                    return json.load(f)
+            for path in possible_paths:
+                if os.path.exists(path):
+                    with open(path, 'r') as f:
+                        logger.info(f"Found credentials at: {path}")
+                        return json.load(f)
             
-            # Fallback to current directory
-            if os.path.exists('google_drive_token.json'):
-                with open('google_drive_token.json', 'r') as f:
-                    return json.load(f)
-            
+            logger.warning("No Google credentials found - OAuth setup required via web interface")
             return None
             
         except Exception as e:
