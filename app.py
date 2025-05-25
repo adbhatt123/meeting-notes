@@ -390,7 +390,12 @@ def api_list_drive_files():
         folder_id = request.args.get('folder_id', os.environ.get('GOOGLE_DRIVE_FOLDER_ID'))
         modified_since = request.args.get('modified_since')
         
-        query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document'"
+        # Build query - if no folder_id, search all accessible files
+        if folder_id and folder_id.strip():
+            query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document'"
+        else:
+            query = "mimeType='application/vnd.google-apps.document'"
+            
         if modified_since:
             query += f" and modifiedTime > '{modified_since}'"
             
@@ -443,10 +448,14 @@ Subject: {subject}
 {body}
 """
         
+        # Base64 encode the message
+        import base64
+        raw_message = base64.urlsafe_b64encode(message.encode('utf-8')).decode('ascii')
+        
         # Create draft
         draft = gmail_service.users().drafts().create(
             userId='me',
-            body={'message': {'raw': message.encode('utf-8').decode('ascii', errors='ignore')}}
+            body={'message': {'raw': raw_message}}
         ).execute()
         
         return jsonify({
