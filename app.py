@@ -280,22 +280,36 @@ def api_test():
 def save_credentials(creds_data):
     """Save credentials to persistent storage"""
     try:
-        # For Render, we'll use environment variable or file storage
-        credentials_file = '/opt/render/project/data/google_drive_token.json'
+        # Save to multiple locations for worker access
+        save_locations = [
+            '/opt/render/project/data/google_drive_token.json',
+            '/tmp/google_drive_token.json',
+            'google_drive_token.json'
+        ]
         
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(credentials_file), exist_ok=True)
+        for location in save_locations:
+            try:
+                # Create directory if it doesn't exist
+                os.makedirs(os.path.dirname(location), exist_ok=True)
+                
+                with open(location, 'w') as f:
+                    json.dump(creds_data, f, indent=2)
+                    
+                logger.info(f"Credentials saved to: {location}")
+                
+            except Exception as e:
+                logger.warning(f"Could not save to {location}: {e}")
         
-        with open(credentials_file, 'w') as f:
-            json.dump(creds_data, f, indent=2)
+        # Also save as environment variable for worker access
+        try:
+            # This won't persist across restarts but helps with current session
+            os.environ['GOOGLE_CREDENTIALS_JSON'] = json.dumps(creds_data)
+            logger.info("Credentials also set as environment variable")
+        except Exception as e:
+            logger.warning(f"Could not set env variable: {e}")
             
-        logger.info("Credentials saved successfully")
-        
     except Exception as e:
         logger.error(f"Failed to save credentials: {e}")
-        # Fallback: try current directory
-        with open('google_drive_token.json', 'w') as f:
-            json.dump(creds_data, f, indent=2)
 
 def load_credentials():
     """Load credentials from persistent storage"""
