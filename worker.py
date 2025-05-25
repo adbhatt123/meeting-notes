@@ -151,6 +151,13 @@ class VCWorkflowWorker:
                     value = os.environ[key]
                     logger.info(f"  {key}: {value[:20]}...")
             
+            # Try using OAuth client credentials to create a simple test
+            client_id = os.environ.get('GOOGLE_CLIENT_ID')
+            client_secret = os.environ.get('GOOGLE_CLIENT_SECRET')
+            if client_id and client_secret:
+                logger.info("Found OAuth client credentials - but need access token")
+                logger.info("Visit web interface to complete OAuth and copy credentials")
+            
             return None
             
         except Exception as e:
