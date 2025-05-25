@@ -479,8 +479,11 @@ def api_create_affinity_deal():
             return jsonify({'error': 'Affinity API key not configured'}), 500
         
         # Create deal in Affinity
+        # Affinity uses Basic auth with API key as username, empty password
+        import base64
+        auth_string = base64.b64encode(f'{affinity_api_key}:'.encode()).decode()
         headers = {
-            'Authorization': f'Basic {affinity_api_key}',
+            'Authorization': f'Basic {auth_string}',
             'Content-Type': 'application/json'
         }
         
@@ -492,11 +495,15 @@ def api_create_affinity_deal():
             'stage': deal_data.get('stage', 'Prospecting')
         }
         
+        logger.info(f"Creating Affinity deal: {affinity_deal}")
+        
         response = requests.post(
             'https://api.affinity.co/list-entries',
             headers=headers,
             json=affinity_deal
         )
+        
+        logger.info(f"Affinity API response: {response.status_code} - {response.text}")
         
         if response.status_code == 201:
             return jsonify({
@@ -504,7 +511,17 @@ def api_create_affinity_deal():
                 'message': 'Deal created successfully'
             })
         else:
-            return jsonify({'error': f'Affinity API error: {response.status_code}'}), 500
+            error_details = {
+                'status': response.status_code,
+                'response': response.text,
+                'headers_sent': dict(headers),
+                'data_sent': affinity_deal
+            }
+            logger.error(f"Affinity API error: {error_details}")
+            return jsonify({
+                'error': f'Affinity API error: {response.status_code}',
+                'details': response.text
+            }), 500
             
     except Exception as e:
         logger.error(f"Error creating Affinity deal: {e}")
