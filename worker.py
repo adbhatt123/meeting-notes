@@ -121,11 +121,21 @@ class VCWorkflowWorker:
     def load_google_credentials(self):
         """Load Google OAuth credentials"""
         try:
-            # Check multiple possible locations
+            # First check environment variable
+            env_creds = os.environ.get('GOOGLE_CREDENTIALS_JSON')
+            if env_creds:
+                try:
+                    creds_data = json.loads(env_creds)
+                    logger.info("Found credentials in environment variable")
+                    return creds_data
+                except Exception as e:
+                    logger.warning(f"Could not parse env credentials: {e}")
+            
+            # Check multiple possible file locations
             possible_paths = [
+                '/tmp/google_drive_token.json',
                 '/opt/render/project/data/google_drive_token.json',
-                'google_drive_token.json',
-                '/tmp/google_drive_token.json'
+                'google_drive_token.json'
             ]
             
             for path in possible_paths:
@@ -135,6 +145,12 @@ class VCWorkflowWorker:
                         return json.load(f)
             
             logger.warning("No Google credentials found - OAuth setup required via web interface")
+            logger.info("Available environment variables:")
+            for key in os.environ:
+                if 'GOOGLE' in key:
+                    value = os.environ[key]
+                    logger.info(f"  {key}: {value[:20]}...")
+            
             return None
             
         except Exception as e:
