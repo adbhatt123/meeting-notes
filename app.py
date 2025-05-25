@@ -540,58 +540,83 @@ def api_create_affinity_deal():
         # For simplicity, we'll try to create a list entry directly with available data
         logger.info(f"Attempting to create Affinity list entry for: {deal_name}")
         
-        # Try multiple approaches for Affinity API v2
-        approaches = [
-            # Approach 1: v2 API list entries
-            {
-                'url': f'https://api.affinity.co/v2/lists/{list_id}/list-entries',
-                'data': {'name': deal_name}
-            },
-            # Approach 2: v2 API organizations (if it's a company)
-            {
-                'url': 'https://api.affinity.co/v2/organizations',
-                'data': {'name': deal_name}
-            },
-            # Approach 3: Legacy v1 endpoint (fallback)
-            {
-                'url': 'https://api.affinity.co/list-entries',
-                'data': {
-                    'list_id': int(list_id),
-                    'name': deal_name
-                }
+        # Affinity v2 API: First create or find organization, then add to list
+        logger.info(f"Step 1: Creating organization for: {deal_name}")
+        
+        # Create organization
+        org_data = {
+            'name': deal_name
+        }
+        
+        org_response = requests.post(
+            'https://api.affinity.co/v2/organizations',
+            headers=headers,
+            json=org_data
+        )
+        
+        logger.info(f"Organization creation: {org_response.status_code} - {org_response.text}")
+        
+        if org_response.status_code in [200, 201]:
+            org = org_response.json()
+            org_id = org['id']
+            
+            # Step 2: Add organization to the list
+            logger.info(f"Step 2: Adding organization {org_id} to list {list_id}")
+            
+            list_entry_data = {
+                'entity_id': org_id
             }
-        ]
-        
-        success = False
-        last_error = None
-        
-        for i, approach in enumerate(approaches, 1):
-            logger.info(f"Trying Affinity approach {i}: {approach['url']}")
             
             response = requests.post(
-                approach['url'],
+                f'https://api.affinity.co/v2/lists/{list_id}/list-entries',
                 headers=headers,
-                json=approach['data']
+                json=list_entry_data
             )
             
-            logger.info(f"Approach {i} response: {response.status_code} - {response.text}")
+            logger.info(f"List entry creation: {response.status_code} - {response.text}")
             
-            if response.status_code in [200, 201]:
-                success = True
-                break
+        elif org_response.status_code == 422:
+            # Organization might already exist, try to find it
+            logger.info(f"Organization might exist, searching for: {deal_name}")
+            
+            search_response = requests.get(
+                'https://api.affinity.co/v2/organizations',
+                headers=headers,
+                params={'term': deal_name}
+            )
+            
+            if search_response.status_code == 200:
+                orgs = search_response.json()
+                if orgs and len(orgs) > 0:
+                    org_id = orgs[0]['id']
+                    logger.info(f"Found existing organization: {org_id}")
+                    
+                    # Add to list
+                    list_entry_data = {'entity_id': org_id}
+                    response = requests.post(
+                        f'https://api.affinity.co/v2/lists/{list_id}/list-entries',
+                        headers=headers,
+                        json=list_entry_data
+                    )
+                else:
+                    return jsonify({'error': 'Could not create or find organization'}), 500
             else:
-                last_error = {
-                    'status': response.status_code,
-                    'response': response.text,
-                    'url': approach['url'],
-                    'data': approach['data']
-                }
+                return jsonify({'error': f'Organization search failed: {search_response.text}'}), 500
+        else:
+            return jsonify({'error': f'Organization creation failed: {org_response.text}'}), 500
+        
+        success = response.status_code in [200, 201]
         
         if not success:
-            logger.error(f"All Affinity approaches failed. Last error: {last_error}")
+            error_details = {
+                'status': response.status_code,
+                'response': response.text,
+                'step': 'list_entry_creation'
+            }
+            logger.error(f"List entry creation failed: {error_details}")
             return jsonify({
-                'error': 'Failed to create Affinity entry with all approaches',
-                'details': last_error
+                'error': 'Failed to add organization to list',
+                'details': error_details
             }), 500
         
         logger.info(f"Affinity API response: {response.status_code} - {response.text}")
