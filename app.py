@@ -277,6 +277,33 @@ def api_test():
         'service': 'vc-workflow-automation'
     })
 
+@app.route('/api/credentials')
+def api_credentials():
+    """Show credentials for worker setup"""
+    try:
+        creds_data = load_credentials()
+        if creds_data:
+            # Remove sensitive token for display
+            safe_creds = creds_data.copy()
+            if 'token' in safe_creds:
+                safe_creds['token'] = safe_creds['token'][:20] + "..."
+            
+            return jsonify({
+                'status': 'found',
+                'credentials_preview': safe_creds,
+                'instructions': 'Add GOOGLE_CREDENTIALS_JSON environment variable to worker with full credentials'
+            })
+        else:
+            return jsonify({
+                'status': 'not_found',
+                'message': 'No credentials available. Complete OAuth setup first.'
+            })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        })
+
 def save_credentials(creds_data):
     """Save credentials to persistent storage"""
     try:
