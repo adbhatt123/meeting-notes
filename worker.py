@@ -264,7 +264,7 @@ Only include information that is explicitly mentioned in the notes. Use null for
             logger.error(f"Error calling Anthropic API: {e}")
             return None
     
-    def create_affinity_deal(self, founder_info, document_title):
+    def create_affinity_deal(self, founder_info, document_title, document_content):
         """Create deal in Affinity via web service"""
         logger.info("💼 Creating Affinity deal...")
         
@@ -272,13 +272,43 @@ Only include information that is explicitly mentioned in the notes. Use null for
             # Prepare deal data
             company_name = founder_info.get('company_name', 'Unknown Company')
             founder_name = founder_info.get('founder_name', 'Unknown Founder')
+            founder_email = founder_info.get('founder_email', '')
             
-            deal_name = f"{company_name} - {founder_name}"
+            # Determine deal name based on email domain
+            deal_name = company_name  # Default to company name
+            
+            if founder_email:
+                # Extract domain from email
+                email_domain = founder_email.split('@')[-1].lower()
+                
+                # Check if it's a corporate email (not gmail, yahoo, outlook, etc.)
+                personal_domains = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 
+                                   'icloud.com', 'me.com', 'mac.com', 'live.com', 'msn.com',
+                                   'aol.com', 'protonmail.com', 'proton.me']
+                
+                if email_domain not in personal_domains:
+                    # Use domain as company name (capitalize first letter)
+                    domain_name = email_domain.split('.')[0]
+                    deal_name = domain_name.capitalize()
+                    logger.info(f"Using corporate domain for deal name: {deal_name}")
+                else:
+                    # Personal email - use founder's name
+                    deal_name = f"{founder_name}'s Company"
+                    logger.info(f"Using founder name format for deal: {deal_name}")
+            else:
+                # No email - use founder's name format
+                deal_name = f"{founder_name}'s Company"
+                logger.info(f"No email found, using founder name format: {deal_name}")
+            
+            # Prepare meeting notes for Affinity
+            meeting_notes = self._format_meeting_notes(founder_info, document_content)
             
             deal_data = {
                 'name': deal_name,
                 'stage': 'Prospecting',
-                'entity_id': None  # Will be created if needed
+                'entity_id': None,  # Will be created if needed
+                'notes': meeting_notes,
+                'founder_info': founder_info  # Pass full info for notes creation
             }
             
             # Call web service API
@@ -289,12 +319,33 @@ Only include information that is explicitly mentioned in the notes. Use null for
                 return None
             
             deal_id = result.get('deal_id')
-            logger.info(f"✅ Created Affinity deal: {deal_id}")
+            logger.info(f"✅ Created Affinity deal: {deal_id} with name: {deal_name}")
             return deal_id
             
         except Exception as e:
             logger.error(f"Error creating Affinity deal: {e}")
             return None
+    
+    def _format_meeting_notes(self, founder_info, document_content):
+        """Format meeting notes for Affinity"""
+        notes = f"""Meeting Notes - {datetime.utcnow().strftime('%Y-%m-%d')}
+
+Founder: {founder_info.get('founder_name', 'Unknown')}
+Email: {founder_info.get('founder_email', 'Not provided')}
+Company: {founder_info.get('company_name', 'Unknown')}
+Industry: {founder_info.get('industry', 'Not specified')}
+Stage: {founder_info.get('stage', 'Not specified')}
+
+=== SUMMARY ===
+{founder_info.get('summary', 'No summary available')}
+
+=== NEXT STEPS ===
+{founder_info.get('next_steps', 'No next steps defined')}
+
+=== FULL MEETING NOTES ===
+{document_content}
+"""
+        return notes
     
     def generate_follow_up_email(self, founder_info):
         """Generate follow-up email using Claude"""
@@ -417,7 +468,7 @@ Format as a proper email with subject line.
                 return False
             
             # Create Affinity deal
-            deal_id = self.create_affinity_deal(founder_info, title)
+            deal_id = self.create_affinity_deal(founder_info, title, content)
             
             # Generate and create email draft
             email_content = self.generate_follow_up_email(founder_info)
