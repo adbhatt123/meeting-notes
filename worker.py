@@ -355,27 +355,52 @@ Stage: {founder_info.get('stage', 'Not specified')}
             founder_name = founder_info.get('founder_name', 'there')
             company_name = founder_info.get('company_name', 'your company')
             summary = founder_info.get('summary', 'our recent conversation')
+            next_steps = founder_info.get('next_steps', 'To be discussed')
+            industry = founder_info.get('industry', '')
+            stage = founder_info.get('stage', '')
             
             prompt = f"""
-Write a professional follow-up email to a founder after a VC meeting.
+You are writing a professional follow-up email after a VC-founder meeting. The goal is to write a warm, thoughtful, but not overly effusive message.
 
-Founder: {founder_name}
-Company: {company_name}
-Meeting Summary: {summary}
+Meeting Details:
+- Founder: {founder_name}
+- Company: {company_name}
+- Industry: {industry}
+- Stage: {stage}
+- Meeting Summary: {summary}
+- Action Items/Next Steps from Meeting: {next_steps}
 
-Please write a warm, professional follow-up email that:
-1. Thanks them for their time
-2. References something specific from the conversation
-3. Expresses continued interest
-4. Suggests next steps
-5. Keeps it concise (3-4 paragraphs max)
+Instructions:
+1. Summarize the conversation clearly and accurately in your own words, based on the provided meeting notes.
+2. Express appreciation for the founder's time and product explanation.
+3. Reinforce interest and next steps.
+4. Include the specific action items under a "Next Steps" section at the end of the email.
 
-Format as a proper email with subject line.
+The email should be structured like this:
+- Friendly intro and thanks
+- Brief recap of what was discussed (in your own words, not just repeating the summary)
+- Professional feedback or reflections from the investor's perspective — show that you understood and are thoughtfully considering the opportunity
+- Reiterate what's next and what the founder can expect
+- A separate "Next Steps" bullet list at the end
+
+Tone: friendly, sharp, professional — not robotic or overly salesy. Write as if you're a thoughtful VC partner who genuinely engaged with the founder's vision.
+
+Additional guidance:
+- Make the subject line specific and action-oriented (e.g., "Following up on {company_name} + next steps" or "Great connecting about {specific topic discussed}")
+- Reference specific details from the conversation to show you were actively listening
+- If technical aspects were discussed, demonstrate understanding without being overly technical
+- Keep paragraphs short and scannable
+- End with clear next steps and timeline expectations
+
+Format the output as:
+Subject: [Your specific, engaging subject line here]
+
+[Email body here]
 """
             
             message = self.anthropic.messages.create(
                 model="claude-3-5-haiku-20241022",
-                max_tokens=800,
+                max_tokens=1200,  # Increased for structured email with next steps
                 messages=[{
                     "role": "user",
                     "content": prompt
