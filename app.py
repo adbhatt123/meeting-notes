@@ -10,8 +10,12 @@ import os
 import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 from datetime import datetime
 import logging
+import io
+import re
+from html.parser import HTMLParser
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'vc-workflow-automation-key')
