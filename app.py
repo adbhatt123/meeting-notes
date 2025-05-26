@@ -399,6 +399,14 @@ def api_get_document(document_id):
         docs_service = build('docs', 'v1', credentials=creds)
         drive_service = build('drive', 'v3', credentials=creds)
         
+        # Initialize variables at function scope
+        emails_found = []
+        invited_emails = []
+        all_emails = []
+        content = ""
+        in_invited_section = False
+        current_section = "start"
+        
         # Get document metadata first
         doc = docs_service.documents().get(documentId=document_id).execute()
         doc_title = doc.get('title', 'Untitled')
@@ -505,8 +513,7 @@ def api_get_document(document_id):
             emails_found = []
         
         # Continue with regular text extraction for content
-        content = ""
-        current_section = "start"
+        # Variables already initialized at function scope
         
         logger.info(f"Starting document parsing for {document_id}")
         logger.info(f"Document structure has {len(doc.get('body', {}).get('content', []))} elements")
