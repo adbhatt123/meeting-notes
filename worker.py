@@ -146,24 +146,27 @@ class VCWorkflowWorker:
         
         return {
             'title': result.get('title', 'Untitled'),
-            'content': result.get('content', '')
+            'content': result.get('content', ''),
+            'founder_email': result.get('founder_email'),  # Email extracted from Invited section
+            'emails_found': result.get('emails_found', [])
         }
     
-    def extract_founder_info(self, content, document_title):
+    def extract_founder_info(self, content, document_title, doc_data):
         """Extract founder information using Anthropic Claude"""
         logger.info("🤖 Extracting founder information with Claude...")
         
         try:
+            extracted_email = doc_data.get('founder_email', 'Not found')
             prompt = f"""
 Analyze this VC meeting note and extract key information about the founder and company.
 
-IMPORTANT EMAIL EXTRACTION RULES:
-1. Look for an "Invited" section near the beginning of the document (usually right after the title)
-2. The first person listed in the "Invited" section (who is NOT "Adarsh Bhatt") is the founder
-3. Extract the founder's email in one of these ways:
-   - If there's a direct email address (e.g., founder@company.com) next to their name
-   - If there's just a name, that person likely has a Google contact card - in this case, look for any email addresses mentioned elsewhere in the document that could belong to them
-   - Check for email patterns like firstname@company.com or lastname@company.com based on the founder's name and company
+IMPORTANT: The founder's email has already been extracted from the document's Invited section.
+The email provided separately is: {extracted_email}
+
+Additional context:
+- Look for the founder's name in the "Invited" section (first person who is NOT "Adarsh Bhatt")
+- Use the provided email for the founder_email field if available
+- If no email was extracted, try to find one in the document content
 
 Document Title: {document_title}
 
@@ -173,7 +176,7 @@ Meeting Notes:
 Please extract the following information in JSON format:
 {{
     "founder_name": "Full name of the founder from the Invited section",
-    "founder_email": "Email address (follow the rules above to find it)",
+    "founder_email": "Email address (use the provided email: {extracted_email})",
     "company_name": "Name of the company/startup",
     "industry": "Industry or sector",
     "stage": "Funding stage (seed, series A, etc.)",
@@ -212,6 +215,10 @@ Only include information that is explicitly mentioned in the notes. Use null for
                         logger.info(f"📧 Found founder email: {founder_email}")
                     else:
                         logger.warning("⚠️ No founder email found in extraction")
+                        # Use the email from document extraction if Claude didn't find one
+                        if doc_data.get('founder_email'):
+                            founder_info['founder_email'] = doc_data['founder_email']
+                            logger.info(f"📧 Using email from document extraction: {doc_data['founder_email']}")
                     
                     return founder_info
                 else:
@@ -370,7 +377,7 @@ Format as a proper email with subject line.
                 return False
             
             # Extract founder information
-            founder_info = self.extract_founder_info(content, title)
+            founder_info = self.extract_founder_info(content, title, doc_data)
             if not founder_info:
                 logger.error(f"Failed to extract founder info from {doc_name}")
                 return False
