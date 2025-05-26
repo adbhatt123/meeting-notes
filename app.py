@@ -29,7 +29,8 @@ REDIRECT_URI = f"{RENDER_EXTERNAL_URL}/oauth/callback"
 SCOPES = [
     'https://www.googleapis.com/auth/gmail.compose',
     'https://www.googleapis.com/auth/drive.readonly',
-    'https://www.googleapis.com/auth/documents.readonly'
+    'https://www.googleapis.com/auth/documents.readonly',
+    'https://www.googleapis.com/auth/contacts.readonly'  # For People API
 ]
 
 @app.route('/')
@@ -379,6 +380,63 @@ def api_debug_document(document_id):
         logger.error(f"Error debugging document {document_id}: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/google/documents/<document_id>/contacts')
+def api_get_document_contacts(document_id):
+    """Get contacts mentioned in a document using various methods"""
+    try:
+        creds_data = load_credentials()
+        if not creds_data:
+            return jsonify({'error': 'No Google credentials available'}), 500
+            
+        creds = Credentials(
+            token=creds_data['token'],
+            refresh_token=creds_data.get('refresh_token'),
+            token_uri=creds_data['token_uri'],
+            client_id=creds_data['client_id'],
+            client_secret=creds_data['client_secret'],
+            scopes=creds_data['scopes']
+        )
+        
+        people_service = build('people', 'v1', credentials=creds)
+        
+        # Try to find contacts by searching for common patterns
+        # This is a simplified approach - in reality, we'd need the actual contact IDs
+        try:
+            # Search for all contacts
+            results = people_service.people().connections().list(
+                resourceName='people/me',
+                pageSize=100,
+                personFields='names,emailAddresses'
+            ).execute()
+            
+            connections = results.get('connections', [])
+            logger.info(f"Found {len(connections)} contacts in user's Google contacts")
+            
+            # Return all contacts for now - we'll filter in the worker
+            contacts = []
+            for person in connections:
+                names = person.get('names', [])
+                emails = person.get('emailAddresses', [])
+                if names and emails:
+                    contact = {
+                        'name': names[0].get('displayName', ''),
+                        'email': emails[0].get('value', '')
+                    }
+                    contacts.append(contact)
+                    
+            return jsonify({
+                'contacts': contacts,
+                'total': len(contacts)
+            })
+            
+        except Exception as e:
+            logger.error(f"Error accessing People API: {e}")
+            return jsonify({'error': 'People API not accessible', 'details': str(e)}), 500
+            
+    except Exception as e:
+        logger.error(f"Error in contacts endpoint: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/google/documents/<document_id>')
 def api_get_document(document_id):
     """API endpoint for worker to get Google Doc content"""
@@ -585,6 +643,10 @@ def api_get_document(document_id):
         # Log whether HTML export was attempted and succeeded
         logger.info(f"HTML export attempted: {'Success' if html_export_success else 'Failed'}")
         
+        # Extract text with special handling for Invited section
+        invited_section_text = ""
+        capture_invited = False
+        
         logger.info(f"Starting document parsing for {document_id}")
         logger.info(f"Document structure has {len(doc.get('body', {}).get('content', []))} elements")
         
@@ -669,6 +731,38 @@ def api_get_document(document_id):
                     founder_email = email_info['email']
                     logger.info(f"📧 Using fallback email (not from invited): {founder_email}")
                     break
+                    
+        # Last resort: Extract founder name from title and search for it
+        founder_name = None
+        if doc_title:
+            logger.info("🔍 Attempting to extract founder from document title...")
+            # Pattern: "Founder Name and Adarsh Bhatt - Date - Notes"
+            title_parts = doc_title.split(' and ')
+            if len(title_parts) >= 2 and 'Adarsh' in title_parts[1]:
+                founder_name = title_parts[0].strip()
+                logger.info(f"📝 Extracted founder name from title: {founder_name}")
+                
+        if not founder_email and founder_name:
+                
+                # Look for this name in the document content
+                if founder_name:
+                    # Try to find email patterns near this name in content
+                    name_index = content.lower().find(founder_name.lower())
+                    if name_index != -1:
+                        # Look for emails within 200 characters of the name
+                        search_start = max(0, name_index - 100)
+                        search_end = min(len(content), name_index + 200)
+                        search_text = content[search_start:search_end]
+                        
+                        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+                        nearby_emails = re.findall(email_pattern, search_text)
+                        if nearby_emails:
+                            founder_email = nearby_emails[0]
+                            logger.info(f"✅ Found email near founder name: {founder_email}")
+                    
+                    # Store founder name for Claude to use
+                    if not founder_email:
+                        logger.info(f"💡 Providing founder name '{founder_name}' to Claude for email inference")
         
         return jsonify({
             'document_id': document_id,
@@ -676,6 +770,7 @@ def api_get_document(document_id):
             'content': content,
             'emails_found': emails_found,
             'founder_email': founder_email,
+            'founder_name': founder_name,  # Add founder name from title
             'debug_info': {
                 'total_emails': len(emails_found),
                 'invited_emails_count': len(invited_emails),
