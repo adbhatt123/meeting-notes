@@ -386,7 +386,7 @@ The email should be structured like this:
 Tone: friendly, sharp, professional — not robotic or overly salesy. Write as if you're a thoughtful VC partner who genuinely engaged with the founder's vision.
 
 Additional guidance:
-- Make the subject line specific and action-oriented (e.g., "Following up on {company_name} + next steps" or "Great connecting about {specific topic discussed}")
+- Make the subject line specific and action-oriented (e.g., "Following up on [company name] + next steps" or "Great connecting about [specific topic discussed]")
 - Reference specific details from the conversation to show you were actively listening
 - If technical aspects were discussed, demonstrate understanding without being overly technical
 - Keep paragraphs short and scannable
