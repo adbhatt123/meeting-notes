@@ -412,6 +412,7 @@ def api_get_document(document_id):
         doc_title = doc.get('title', 'Untitled')
         
         # Export document as HTML to preserve links
+        html_export_success = False
         try:
             logger.info(f"Exporting document {document_id} as HTML to extract emails...")
             request = drive_service.files().export_media(
@@ -430,6 +431,12 @@ def api_get_document(document_id):
             html_content = fh.getvalue().decode('utf-8')
             logger.info(f"Downloaded HTML content: {len(html_content)} bytes")
             
+            # Save HTML for debugging (temporarily)
+            debug_html_path = f'/tmp/doc_{document_id[:8]}.html'
+            with open(debug_html_path, 'w') as f:
+                f.write(html_content)
+            logger.info(f"Saved HTML for debugging to: {debug_html_path}")
+            
             # Debug: Log a sample of the HTML to see structure
             if len(html_content) > 1000:
                 logger.debug(f"HTML sample (first 1000 chars): {html_content[:1000]}")
@@ -442,6 +449,20 @@ def api_get_document(document_id):
                 start = max(0, invited_index - 200)
                 end = min(len(html_content), invited_index + 500)
                 logger.info(f"Invited section context: {html_content[start:end]}")
+            else:
+                logger.warning("'Invited' text not found in HTML content")
+                # Try case-insensitive search
+                invited_index_lower = html_content.lower().find('invited')
+                if invited_index_lower != -1:
+                    logger.info(f"Found 'invited' (lowercase) at position {invited_index_lower}")
+                    start = max(0, invited_index_lower - 200)
+                    end = min(len(html_content), invited_index_lower + 500)
+                    logger.info(f"Invited section context (case-insensitive): {html_content[start:end]}")
+            
+            # First check if HTML contains any links at all
+            link_count = html_content.count('href=')
+            mailto_count = html_content.count('mailto:')
+            logger.info(f"HTML contains {link_count} links total, {mailto_count} mailto links")
             
             # Extract emails from HTML
             class EmailExtractor(HTMLParser):
@@ -451,20 +472,23 @@ def api_get_document(document_id):
                     self.current_text = ""
                     self.in_invited = False
                     self.invited_emails = []
+                    self.all_links = []  # Track all links for debugging
                     
                 def handle_starttag(self, tag, attrs):
                     if tag == 'a':
                         for attr, value in attrs:
-                            if attr == 'href' and value.startswith('mailto:'):
-                                email = value.replace('mailto:', '').split('?')[0]
-                                self.emails.append({
-                                    'email': email,
-                                    'text': self.current_text.strip(),
-                                    'in_invited': self.in_invited
-                                })
-                                if self.in_invited:
-                                    self.invited_emails.append(email)
-                                logger.info(f"Found email in HTML: {self.current_text.strip()} -> {email}")
+                            if attr == 'href':
+                                self.all_links.append(value)  # Track all links
+                                if value.startswith('mailto:'):
+                                    email = value.replace('mailto:', '').split('?')[0]
+                                    self.emails.append({
+                                        'email': email,
+                                        'text': self.current_text.strip(),
+                                        'in_invited': self.in_invited
+                                    })
+                                    if self.in_invited:
+                                        self.invited_emails.append(email)
+                                    logger.info(f"Found email in HTML: {self.current_text.strip()} -> {email}")
                     self.current_text = ""
                     
                 def handle_data(self, data):
@@ -479,10 +503,25 @@ def api_get_document(document_id):
             parser = EmailExtractor()
             parser.feed(html_content)
             
+            # Log all links found
+            logger.info(f"Parser found {len(parser.all_links)} total links")
+            if parser.all_links:
+                logger.info(f"First few links: {parser.all_links[:5]}")
+            
             # Also try regex as backup
             email_pattern = r'href=["\']mailto:([^"\'>]+)["\']'
             regex_emails = re.findall(email_pattern, html_content)
             logger.info(f"Regex found emails: {regex_emails}")
+            
+            # Try additional patterns
+            email_pattern2 = r'<a[^>]+href=["\']?mailto:([^"\'>\s]+)["\']?[^>]*>'
+            regex_emails2 = re.findall(email_pattern2, html_content, re.IGNORECASE)
+            logger.info(f"Regex pattern 2 found: {regex_emails2}")
+            
+            # Look for any email-like patterns in the HTML
+            general_email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+            all_email_patterns = re.findall(general_email_pattern, html_content)
+            logger.info(f"All email-like patterns in HTML: {all_email_patterns[:5]}...")  # First 5
             
             # Combine results
             all_emails = parser.emails
@@ -501,6 +540,33 @@ def api_get_document(document_id):
             logger.info(f"Invited section emails: {invited_emails}")
             
             emails_found = all_emails
+            html_export_success = True
+            
+            # If no emails found, try alternative export format
+            if len(all_emails) == 0:
+                logger.info("No emails found in HTML export, trying alternative approach...")
+                
+                # Try exporting as plain text
+                try:
+                    request2 = drive_service.files().export_media(
+                        fileId=document_id,
+                        mimeType='text/plain'
+                    )
+                    fh2 = io.BytesIO()
+                    downloader2 = MediaIoBaseDownload(fh2, request2)
+                    done2 = False
+                    while not done2:
+                        status2, done2 = downloader2.next_chunk()
+                    
+                    plain_content = fh2.getvalue().decode('utf-8')
+                    logger.info(f"Plain text export: {len(plain_content)} bytes")
+                    
+                    # Look for email patterns in plain text
+                    plain_emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', plain_content)
+                    logger.info(f"Found emails in plain text: {plain_emails}")
+                    
+                except Exception as e2:
+                    logger.error(f"Plain text export also failed: {e2}")
             
         except Exception as e:
             logger.error(f"Error exporting document as HTML: {e}")
@@ -511,9 +577,13 @@ def api_get_document(document_id):
             all_emails = []
             invited_emails = []
             emails_found = []
+            html_export_success = False
         
         # Continue with regular text extraction for content
         # Variables already initialized at function scope
+        
+        # Log whether HTML export was attempted and succeeded
+        logger.info(f"HTML export attempted: {'Success' if html_export_success else 'Failed'}")
         
         logger.info(f"Starting document parsing for {document_id}")
         logger.info(f"Document structure has {len(doc.get('body', {}).get('content', []))} elements")
