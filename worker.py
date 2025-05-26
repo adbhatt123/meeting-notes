@@ -157,6 +157,14 @@ class VCWorkflowWorker:
             prompt = f"""
 Analyze this VC meeting note and extract key information about the founder and company.
 
+IMPORTANT EMAIL EXTRACTION RULES:
+1. Look for an "Invited" section near the beginning of the document (usually right after the title)
+2. The first person listed in the "Invited" section (who is NOT "Adarsh Bhatt") is the founder
+3. Extract the founder's email in one of these ways:
+   - If there's a direct email address (e.g., founder@company.com) next to their name
+   - If there's just a name, that person likely has a Google contact card - in this case, look for any email addresses mentioned elsewhere in the document that could belong to them
+   - Check for email patterns like firstname@company.com or lastname@company.com based on the founder's name and company
+
 Document Title: {document_title}
 
 Meeting Notes:
@@ -164,8 +172,8 @@ Meeting Notes:
 
 Please extract the following information in JSON format:
 {{
-    "founder_name": "Full name of the founder",
-    "founder_email": "Email address if mentioned",
+    "founder_name": "Full name of the founder from the Invited section",
+    "founder_email": "Email address (follow the rules above to find it)",
     "company_name": "Name of the company/startup",
     "industry": "Industry or sector",
     "stage": "Funding stage (seed, series A, etc.)",
@@ -197,6 +205,14 @@ Only include information that is explicitly mentioned in the notes. Use null for
                     json_str = response_text[start_idx:end_idx]
                     founder_info = json.loads(json_str)
                     logger.info(f"✅ Extracted info for: {founder_info.get('founder_name', 'Unknown')}")
+                    
+                    # Log email extraction result
+                    founder_email = founder_info.get('founder_email')
+                    if founder_email:
+                        logger.info(f"📧 Found founder email: {founder_email}")
+                    else:
+                        logger.warning("⚠️ No founder email found in extraction")
+                    
                     return founder_info
                 else:
                     logger.error("No JSON found in Claude response")
