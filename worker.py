@@ -1,710 +1,507 @@
 #!/usr/bin/env python3
 """
-VC Workflow Automation - Web Service for OAuth and Monitoring
-Render Web Service Component
+VC Workflow Automation - Full Background Worker
+Uses web service APIs instead of direct Google API calls
 """
 
-from flask import Flask, request, redirect, render_template_string, jsonify
 import json
 import os
-import requests
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from datetime import datetime
+import time
 import logging
-
-app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'vc-workflow-automation-key')
+import traceback
+import requests
+from datetime import datetime, timedelta
+import anthropic
+import httpx
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# OAuth Configuration
-GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
-GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET')
-RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', 'http://localhost:5000')
-REDIRECT_URI = f"{RENDER_EXTERNAL_URL}/oauth/callback"
-
-SCOPES = [
-    'https://www.googleapis.com/auth/gmail.compose',
-    'https://www.googleapis.com/auth/drive.readonly',
-    'https://www.googleapis.com/auth/documents.readonly'
-]
-
-@app.route('/')
-def dashboard():
-    """Main dashboard showing system status"""
+class VCWorkflowWorker:
+    """Simplified background worker using web service APIs"""
     
-    dashboard_html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>VC Workflow Automation</title>
-        <style>
-            body { font-family: Arial, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }
-            .header { background: #2563eb; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
-            .status-card { background: #f8fafc; border: 1px solid #e2e8f0; padding: 20px; border-radius: 8px; margin: 10px 0; }
-            .status-ok { border-left: 4px solid #10b981; }
-            .status-error { border-left: 4px solid #ef4444; }
-            .status-warning { border-left: 4px solid #f59e0b; }
-            .button { background: #2563eb; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block; }
-            .stats { display: flex; justify-content: space-between; flex-wrap: wrap; }
-            .stat { background: white; border: 1px solid #e2e8f0; padding: 15px; border-radius: 8px; min-width: 200px; margin: 5px; }
-        </style>
-    </head>
-    <body>
-        <div class="header">
-            <h1>🚀 VC Workflow Automation</h1>
-            <p>Automated meeting note processing for your VC fund</p>
-        </div>
+    def __init__(self):
+        self.config = self.load_config()
+        self.web_service_url = self.config.get('WEB_SERVICE_URL', 'https://vc-workflow-web.onrender.com')
         
-        <div class="status-card" id="auth-status">
-            <h3>🔐 Authentication Status</h3>
-            <p id="auth-message">Checking Google Drive access...</p>
-            <a href="/oauth/start" class="button">Setup Google Drive Access</a>
-        </div>
+        # Initialize Anthropic with proxy support
+        http_client = httpx.Client(timeout=60.0, follow_redirects=True)
+        self.anthropic = anthropic.Anthropic(
+            api_key=self.config['ANTHROPIC_API_KEY'],
+            http_client=http_client
+        )
         
-        <div class="status-card status-ok">
-            <h3>⚙️ System Components</h3>
-            <p>✅ Anthropic AI: Ready</p>
-            <p>✅ Affinity CRM: Connected</p>
-            <p>✅ Gmail API: Ready</p>
-            <p>✅ Background Worker: Running</p>
-        </div>
+        self.processed_docs_file = '/opt/render/project/data/processed_documents.json'
+        self.last_check_file = '/opt/render/project/data/last_check.json'
+        self.activity_stats_file = '/opt/render/project/data/activity_stats.json'
         
-        <div class="stats">
-            <div class="stat">
-                <h4>📊 Today's Activity</h4>
-                <p><strong id="processed-today">0</strong> documents processed</p>
-                <p><strong id="deals-created">0</strong> deals created</p>
-            </div>
-            <div class="stat">
-                <h4>🕐 Last Check</h4>
-                <p id="last-check">Never</p>
-            </div>
-            <div class="stat">
-                <h4>📁 Monitored Folder</h4>
-                <p>Meet Recordings</p>
-                <p>{{ folder_id }}</p>
-            </div>
-        </div>
+        # Create data directory
+        os.makedirs('/opt/render/project/data', exist_ok=True)
         
-        <div class="status-card">
-            <h3>📋 Recent Activity</h3>
-            <div id="recent-activity">
-                <p>Loading recent activity...</p>
-            </div>
-        </div>
-        
-        <script>
-            // Check authentication status
-            fetch('/api/status')
-                .then(response => response.json())
-                .then(data => {
-                    const authStatus = document.getElementById('auth-status');
-                    const authMessage = document.getElementById('auth-message');
-                    
-                    if (data.google_drive_connected) {
-                        authStatus.className = 'status-card status-ok';
-                        authMessage.textContent = `✅ Connected as ${data.user_email}`;
-                    } else {
-                        authStatus.className = 'status-card status-error';
-                        authMessage.textContent = '❌ Google Drive not connected';
-                    }
-                    
-                    // Update stats
-                    document.getElementById('processed-today').textContent = data.processed_today || 0;
-                    document.getElementById('deals-created').textContent = data.deals_created || 0;
-                    document.getElementById('last-check').textContent = data.last_check || 'Never';
-                })
-                .catch(error => console.error('Error:', error));
-        </script>
-    </body>
-    </html>
-    """.replace('{{ folder_id }}', os.environ.get('GOOGLE_DRIVE_FOLDER_ID', 'Not configured'))
+        logger.info("✅ Simplified worker initialized - using web service APIs")
     
-    return dashboard_html
-
-@app.route('/oauth/start')
-def oauth_start():
-    """Start Google OAuth flow"""
-    
-    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
-        return "OAuth credentials not configured", 500
-    
-    # Build OAuth URL
-    oauth_params = {
-        'response_type': 'code',
-        'client_id': GOOGLE_CLIENT_ID,
-        'redirect_uri': REDIRECT_URI,
-        'scope': ' '.join(SCOPES),
-        'access_type': 'offline',
-        'prompt': 'consent'
-    }
-    
-    oauth_url = 'https://accounts.google.com/o/oauth2/auth?' + '&'.join([f'{k}={v}' for k, v in oauth_params.items()])
-    
-    return redirect(oauth_url)
-
-@app.route('/oauth/callback')
-def oauth_callback():
-    """Handle OAuth callback from Google"""
-    
-    auth_code = request.args.get('code')
-    error = request.args.get('error')
-    state = request.args.get('state')  # Check if this is for worker
-    
-    if error:
-        return f"OAuth error: {error}", 400
-    
-    if not auth_code:
-        return "No authorization code received", 400
-    
-    try:
-        # Exchange code for tokens
-        token_url = "https://oauth2.googleapis.com/token"
-        token_data = {
-            'code': auth_code,
-            'client_id': GOOGLE_CLIENT_ID,
-            'client_secret': GOOGLE_CLIENT_SECRET,
-            'redirect_uri': REDIRECT_URI,
-            'grant_type': 'authorization_code'
+    def load_config(self):
+        """Load configuration from environment variables"""
+        config = {
+            'ANTHROPIC_API_KEY': os.environ.get('ANTHROPIC_API_KEY'),
+            'AFFINITY_API_KEY': os.environ.get('AFFINITY_API_KEY'),
+            'AFFINITY_LIST_ID': os.environ.get('AFFINITY_LIST_ID'),
+            'GOOGLE_DRIVE_FOLDER_ID': os.environ.get('GOOGLE_DRIVE_FOLDER_ID'),
+            'CHECK_INTERVAL_MINUTES': int(os.environ.get('CHECK_INTERVAL_MINUTES', 60)),
+            'WEB_SERVICE_URL': os.environ.get('WEB_SERVICE_URL', 'https://vc-workflow-web.onrender.com')
         }
         
-        response = requests.post(token_url, data=token_data)
+        missing = [k for k, v in config.items() if not v and k != 'WEB_SERVICE_URL']
+        if missing:
+            logger.error(f"Missing environment variables: {missing}")
+            raise ValueError(f"Missing required environment variables: {missing}")
         
-        if response.status_code != 200:
-            logger.error(f"Token exchange failed: {response.text}")
-            return f"Token exchange failed: {response.status_code}", 500
+        return config
+    
+    def web_api_call(self, endpoint, method='GET', data=None, params=None):
+        """Make API call to web service"""
+        url = f"{self.web_service_url}{endpoint}"
         
-        tokens = response.json()
+        try:
+            if method == 'GET':
+                response = requests.get(url, params=params, timeout=30)
+            elif method == 'POST':
+                response = requests.post(url, json=data, timeout=30)
+            else:
+                raise ValueError(f"Unsupported method: {method}")
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Web API error {response.status_code}: {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Web API call failed for {endpoint}: {e}")
+            return None
+    
+    def get_new_documents(self):
+        """Get new documents from Google Drive via web service"""
+        logger.info("📋 Checking for new documents...")
         
-        # Create credentials
-        creds_data = {
-            'token': tokens['access_token'],
-            'refresh_token': tokens.get('refresh_token'),
-            'token_uri': 'https://oauth2.googleapis.com/token',
-            'client_id': GOOGLE_CLIENT_ID,
-            'client_secret': GOOGLE_CLIENT_SECRET,
-            'scopes': SCOPES
+        # Get last check time
+        last_check = self.load_last_check()
+        logger.info(f"📅 Last check time: {last_check}")
+        
+        params = {
+            'folder_id': self.config['GOOGLE_DRIVE_FOLDER_ID']
         }
         
-        # Check if this is for worker credentials
-        if state == 'worker_credentials':
-            # Return JSON for worker service
-            return f"""
-            <html>
-            <head><title>Worker Credentials</title></head>
-            <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px;">
-                <h2>🔐 Worker Service Credentials</h2>
-                <p>Copy this JSON and add it to your worker service environment variables:</p>
-                <p><strong>Key:</strong> GOOGLE_CREDENTIALS_JSON</p>
-                <p><strong>Value:</strong></p>
-                <textarea readonly style="width: 100%; height: 300px; font-family: monospace; font-size: 12px; padding: 10px; border: 1px solid #ccc;">{json.dumps(creds_data, indent=2)}</textarea>
-                <p><strong>Next steps:</strong></p>
-                <ol>
-                    <li>Copy the JSON above</li>
-                    <li>Go to Render Dashboard → vc-workflow-worker service → Environment</li>
-                    <li>Add GOOGLE_CREDENTIALS_JSON with the JSON as value</li>
-                    <li>Save changes to redeploy worker</li>
-                </ol>
-                <a href="/" style="background: #2563eb; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">Back to Dashboard</a>
-            </body>
-            </html>
-            """
+        if last_check:
+            params['modified_since'] = last_check
+            logger.info(f"🔍 Looking for documents modified since: {last_check}")
+        else:
+            logger.info(f"🔍 Looking for ALL documents (no last check time)")
         
-        # Regular web service credentials
-        save_credentials(creds_data)
+        # Call web service API
+        result = self.web_api_call('/api/google/drive/files', params=params)
         
-        # Test the credentials
-        creds = Credentials(
-            token=creds_data['token'],
-            refresh_token=creds_data.get('refresh_token'),
-            token_uri=creds_data['token_uri'],
-            client_id=creds_data['client_id'],
-            client_secret=creds_data['client_secret'],
-            scopes=creds_data['scopes']
-        )
+        if result is None:
+            logger.error("Failed to get documents from web service")
+            return []
         
-        drive_service = build('drive', 'v3', credentials=creds)
-        about = drive_service.about().get(fields="user").execute()
-        user_email = about.get('user', {}).get('emailAddress', 'Unknown')
+        files = result.get('files', [])
+        logger.info(f"📄 Found {len(files)} documents to check")
         
-        logger.info(f"OAuth successful for user: {user_email}")
+        # Filter out already processed documents
+        processed_docs = self.load_processed_documents()
+        new_files = []
         
-        return f"""
-        <html>
-        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 100px auto; text-align: center;">
-            <h2>✅ Authorization Successful!</h2>
-            <p>Google Drive access configured for: <strong>{user_email}</strong></p>
-            <p>The VC workflow automation is now fully operational.</p>
-            <a href="/" style="background: #2563eb; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">Back to Dashboard</a>
-        </body>
-        </html>
-        """
+        for file_info in files:
+            doc_id = file_info['id']
+            if doc_id not in processed_docs:
+                new_files.append(file_info)
+                logger.info(f"📄 New document: {file_info['name']}")
         
-    except Exception as e:
-        logger.error(f"OAuth callback error: {e}")
-        return f"OAuth setup failed: {str(e)}", 500
-
-@app.route('/api/status')
-def api_status():
-    """API endpoint for system status"""
+        logger.info(f"📄 {len(new_files)} new documents to process")
+        return new_files
     
-    try:
-        # Check Google Drive connection
-        creds_data = load_credentials()
-        google_drive_connected = False
-        user_email = None
+    def get_document_content(self, document_id):
+        """Get document content via web service"""
+        result = self.web_api_call(f'/api/google/documents/{document_id}')
         
-        if creds_data:
-            try:
-                creds = Credentials(
-                    token=creds_data['token'],
-                    refresh_token=creds_data.get('refresh_token'),
-                    token_uri=creds_data['token_uri'],
-                    client_id=creds_data['client_id'],
-                    client_secret=creds_data['client_secret'],
-                    scopes=creds_data['scopes']
-                )
-                
-                drive_service = build('drive', 'v3', credentials=creds)
-                about = drive_service.about().get(fields="user").execute()
-                user_email = about.get('user', {}).get('emailAddress')
-                google_drive_connected = True
-                
-            except Exception as e:
-                logger.warning(f"Google Drive connection test failed: {e}")
+        if result is None:
+            logger.error(f"Failed to get document content for {document_id}")
+            return None
         
-        # Load activity stats
-        stats = load_activity_stats()
+        return {
+            'title': result.get('title', 'Untitled'),
+            'content': result.get('content', '')
+        }
+    
+    def extract_founder_info(self, content, document_title):
+        """Extract founder information using Anthropic Claude"""
+        logger.info("🤖 Extracting founder information with Claude...")
         
-        return jsonify({
-            'google_drive_connected': google_drive_connected,
-            'user_email': user_email,
-            'processed_today': stats.get('processed_today', 0),
-            'deals_created': stats.get('deals_created', 0),
-            'last_check': stats.get('last_check', 'Never'),
-            'system_healthy': google_drive_connected
-        })
-        
-    except Exception as e:
-        logger.error(f"Status check error: {e}")
-        return jsonify({'error': str(e)}), 500
+        try:
+            prompt = f"""
+Analyze this VC meeting note and extract key information about the founder and company.
 
-@app.route('/api/test')
-def api_test():
-    """Test endpoint for monitoring"""
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.utcnow().isoformat(),
-        'service': 'vc-workflow-automation'
-    })
+Document Title: {document_title}
 
-@app.route('/api/credentials')
-def api_credentials():
-    """Show credentials for worker setup"""
-    try:
-        creds_data = load_credentials()
-        if creds_data:
-            # Remove sensitive token for display
-            safe_creds = creds_data.copy()
-            if 'token' in safe_creds:
-                safe_creds['token'] = safe_creds['token'][:20] + "..."
-            
-            return jsonify({
-                'status': 'found',
-                'credentials_preview': safe_creds,
-                'instructions': 'Add GOOGLE_CREDENTIALS_JSON environment variable to worker with full credentials'
-            })
-        else:
-            return jsonify({
-                'status': 'not_found',
-                'message': 'No credentials available. Complete OAuth setup first.'
-            })
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'error': str(e)
-        })
+Meeting Notes:
+{content}
 
-@app.route('/api/google/documents/<document_id>')
-def api_get_document(document_id):
-    """API endpoint for worker to get Google Doc content"""
-    try:
-        creds_data = load_credentials()
-        if not creds_data:
-            return jsonify({'error': 'No Google credentials available'}), 500
-            
-        creds = Credentials(
-            token=creds_data['token'],
-            refresh_token=creds_data.get('refresh_token'),
-            token_uri=creds_data['token_uri'],
-            client_id=creds_data['client_id'],
-            client_secret=creds_data['client_secret'],
-            scopes=creds_data['scopes']
-        )
-        
-        docs_service = build('docs', 'v1', credentials=creds)
-        doc = docs_service.documents().get(documentId=document_id).execute()
-        
-        # Extract text content
-        content = ""
-        for element in doc.get('body', {}).get('content', []):
-            if 'paragraph' in element:
-                for text_run in element['paragraph'].get('elements', []):
-                    if 'textRun' in text_run:
-                        content += text_run['textRun'].get('content', '')
-        
-        return jsonify({
-            'document_id': document_id,
-            'title': doc.get('title', 'Untitled'),
-            'content': content
-        })
-        
-    except Exception as e:
-        logger.error(f"Error getting document {document_id}: {e}")
-        return jsonify({'error': str(e)}), 500
+Please extract the following information in JSON format:
+{{
+    "founder_name": "Full name of the founder",
+    "founder_email": "Email address if mentioned",
+    "company_name": "Name of the company/startup",
+    "industry": "Industry or sector",
+    "stage": "Funding stage (seed, series A, etc.)",
+    "summary": "Brief 2-3 sentence summary of the company and meeting",
+    "next_steps": "Any mentioned next steps or follow-ups"
+}}
 
-@app.route('/api/google/drive/files')
-def api_list_drive_files():
-    """API endpoint for worker to list Drive files"""
-    try:
-        creds_data = load_credentials()
-        if not creds_data:
-            return jsonify({'error': 'No Google credentials available'}), 500
-            
-        creds = Credentials(
-            token=creds_data['token'],
-            refresh_token=creds_data.get('refresh_token'),
-            token_uri=creds_data['token_uri'],
-            client_id=creds_data['client_id'],
-            client_secret=creds_data['client_secret'],
-            scopes=creds_data['scopes']
-        )
-        
-        drive_service = build('drive', 'v3', credentials=creds)
-        
-        # Get query parameters
-        folder_id = request.args.get('folder_id', os.environ.get('GOOGLE_DRIVE_FOLDER_ID'))
-        modified_since = request.args.get('modified_since')
-        
-        # Build query - if no folder_id, search all accessible files
-        if folder_id and folder_id.strip():
-            query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document'"
-        else:
-            query = "mimeType='application/vnd.google-apps.document'"
-            
-        if modified_since:
-            query += f" and modifiedTime > '{modified_since}'"
-            
-        results = drive_service.files().list(
-            q=query,
-            orderBy='modifiedTime desc',
-            fields="files(id,name,modifiedTime,createdTime)"
-        ).execute()
-        
-        return jsonify({
-            'files': results.get('files', [])
-        })
-        
-    except Exception as e:
-        logger.error(f"Error listing drive files: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/google/gmail/draft', methods=['POST'])
-def api_create_gmail_draft():
-    """API endpoint for worker to create Gmail draft"""
-    try:
-        creds_data = load_credentials()
-        if not creds_data:
-            return jsonify({'error': 'No Google credentials available'}), 500
-            
-        creds = Credentials(
-            token=creds_data['token'],
-            refresh_token=creds_data.get('refresh_token'),
-            token_uri=creds_data['token_uri'],
-            client_id=creds_data['client_id'],
-            client_secret=creds_data['client_secret'],
-            scopes=creds_data['scopes']
-        )
-        
-        gmail_service = build('gmail', 'v1', credentials=creds)
-        
-        # Get email data from request
-        email_data = request.get_json()
-        to_email = email_data.get('to')
-        subject = email_data.get('subject')
-        body = email_data.get('body')
-        
-        if not all([to_email, subject, body]):
-            return jsonify({'error': 'Missing required fields: to, subject, body'}), 400
-        
-        # Create email message
-        message = f"""To: {to_email}
-Subject: {subject}
-
-{body}
+Only include information that is explicitly mentioned in the notes. Use null for missing information.
 """
-        
-        # Base64 encode the message
-        import base64
-        raw_message = base64.urlsafe_b64encode(message.encode('utf-8')).decode('ascii')
-        
-        # Create draft
-        draft = gmail_service.users().drafts().create(
-            userId='me',
-            body={'message': {'raw': raw_message}}
-        ).execute()
-        
-        return jsonify({
-            'draft_id': draft['id'],
-            'message': 'Draft created successfully'
-        })
-        
-    except Exception as e:
-        logger.error(f"Error creating Gmail draft: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/debug/env')
-def api_debug_env():
-    """Debug environment variables"""
-    try:
-        affinity_key = os.environ.get('AFFINITY_API_KEY')
-        list_id = os.environ.get('AFFINITY_LIST_ID')
-        
-        return jsonify({
-            'affinity_key_present': bool(affinity_key),
-            'affinity_key_length': len(affinity_key) if affinity_key else 0,
-            'list_id_present': bool(list_id),
-            'list_id_value': list_id,
-            'all_env_keys': [k for k in os.environ.keys() if 'AFFINITY' in k]
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/affinity/test')
-def api_test_affinity():
-    """Test Affinity API connectivity"""
-    try:
-        affinity_api_key = os.environ.get('AFFINITY_API_KEY')
-        if not affinity_api_key:
-            return jsonify({'error': 'Affinity API key not configured'}), 500
-        
-        # Test basic API connectivity using ORIGINAL working approach
-        # Use Basic auth with empty username (what worked locally)
-        import base64
-        auth_string = base64.b64encode(f':{affinity_api_key}'.encode()).decode()
-        headers = {
-            'Authorization': f'Basic {auth_string}',
-            'Content-Type': 'application/json'
-        }
-        
-        # Test lists endpoint using v1 API (what worked originally)
-        response = requests.get('https://api.affinity.co/lists', headers=headers)
-        
-        # Also test if we can get info about available endpoints
-        if response.status_code == 200:
-            # Try to get one list to see its structure
-            try:
-                lists = response.json()
-                if lists and len(lists) > 0:
-                    first_list_id = lists[0]['id']
-                    list_detail = requests.get(f'https://api.affinity.co/lists/{first_list_id}', headers=headers)
-                    logger.info(f"Sample list detail: {list_detail.status_code} - {list_detail.text[:200]}")
-            except:
-                pass
-        
-        return jsonify({
-            'status': response.status_code,
-            'lists_available': response.status_code == 200,
-            'response': response.text[:500]  # First 500 chars
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/affinity/deals', methods=['POST'])
-def api_create_affinity_deal():
-    """API endpoint for worker to create Affinity deal"""
-    try:
-        # Get deal data from request
-        deal_data = request.get_json()
-        
-        affinity_api_key = os.environ.get('AFFINITY_API_KEY')
-        if not affinity_api_key:
-            return jsonify({'error': 'Affinity API key not configured'}), 500
-        
-        # Create deal in Affinity
-        # Use ORIGINAL working approach - Basic auth with empty username
-        import base64
-        auth_string = base64.b64encode(f':{affinity_api_key}'.encode()).decode()
-        headers = {
-            'Authorization': f'Basic {auth_string}',
-            'Content-Type': 'application/json'
-        }
-        
-        # Get list ID
-        list_id = os.environ.get('AFFINITY_LIST_ID')
-        if not list_id:
-            return jsonify({'error': 'Affinity list ID not configured'}), 500
-        
-        # Extract company and founder info
-        deal_name = deal_data.get('name', 'Unknown Deal')
-        
-        # First, try to create or find a person/organization
-        # For simplicity, we'll try to create a list entry directly with available data
-        logger.info(f"Attempting to create Affinity list entry for: {deal_name}")
-        
-        # Use ORIGINAL working approach - v1 API with Basic auth
-        logger.info(f"Step 1: Creating organization for: {deal_name}")
-        
-        # Create organization first (v1 API)
-        org_data = {'name': deal_name}
-        org_response = requests.post(
-            'https://api.affinity.co/organizations',
-            headers=headers,
-            json=org_data
-        )
-        
-        logger.info(f"Organization creation: {org_response.status_code} - {org_response.text}")
-        
-        if org_response.status_code in [200, 201]:
-            org = org_response.json()
-            org_id = org.get('id')
             
-            # Step 2: Add organization to list (v1 API)
-            logger.info(f"Step 2: Adding organization {org_id} to list {list_id}")
-            
-            deal_data = {
-                'entity_id': org_id,
-                'list_id': int(list_id)
-            }
-            
-            response = requests.post(
-                f'https://api.affinity.co/lists/{list_id}/list-entries',
-                headers=headers,
-                json=deal_data
+            message = self.anthropic.messages.create(
+                model="claude-3-5-haiku-20241022",
+                max_tokens=1000,
+                messages=[{
+                    "role": "user",
+                    "content": prompt
+                }]
             )
             
-            logger.info(f"List entry creation: {response.status_code} - {response.text}")
+            response_text = message.content[0].text
             
-        else:
-            logger.error(f"Organization creation failed: {org_response.status_code} - {org_response.text}")
-            return jsonify({
-                'error': 'Failed to create organization in Affinity',
-                'details': org_response.text
-            }), 500
-        
-        success = response.status_code in [200, 201]
-        
-        if not success:
-            error_details = {
-                'status': response.status_code,
-                'response': response.text,
-                'attempted_approaches': 'direct, entities, simple payload'
-            }
-            logger.error(f"All Affinity approaches failed: {error_details}")
-            return jsonify({
-                'error': 'Failed to create Affinity entry with any approach',
-                'details': error_details
-            }), 500
-        
-        logger.info(f"Affinity API response: {response.status_code} - {response.text}")
-        
-        if response.status_code in [200, 201]:
-            return jsonify({
-                'deal_id': response.json().get('id'),
-                'message': 'Deal created successfully'
-            })
-        else:
-            error_details = {
-                'status': response.status_code,
-                'response': response.text,
-                'org_data': org_data,
-                'deal_data': deal_data if 'deal_data' in locals() else None
-            }
-            logger.error(f"Affinity API error: {error_details}")
-            return jsonify({
-                'error': f'Affinity API error: {response.status_code}',
-                'details': response.text
-            }), 500
-            
-    except Exception as e:
-        logger.error(f"Error creating Affinity deal: {e}")
-        return jsonify({'error': str(e)}), 500
-
-def save_credentials(creds_data):
-    """Save credentials to persistent storage"""
-    try:
-        # Save to multiple locations for worker access
-        save_locations = [
-            '/opt/render/project/data/google_drive_token.json',
-            '/tmp/google_drive_token.json',
-            'google_drive_token.json'
-        ]
-        
-        for location in save_locations:
+            # Try to extract JSON from response
             try:
-                # Create directory if it doesn't exist
-                os.makedirs(os.path.dirname(location), exist_ok=True)
+                # Find JSON in response
+                start_idx = response_text.find('{')
+                end_idx = response_text.rfind('}') + 1
                 
-                with open(location, 'w') as f:
-                    json.dump(creds_data, f, indent=2)
+                if start_idx != -1 and end_idx != 0:
+                    json_str = response_text[start_idx:end_idx]
+                    founder_info = json.loads(json_str)
+                    logger.info(f"✅ Extracted info for: {founder_info.get('founder_name', 'Unknown')}")
+                    return founder_info
+                else:
+                    logger.error("No JSON found in Claude response")
+                    return None
                     
-                logger.info(f"Credentials saved to: {location}")
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON from Claude response: {e}")
+                return None
                 
-            except Exception as e:
-                logger.warning(f"Could not save to {location}: {e}")
-        
-        # Also save as environment variable for worker access
-        try:
-            # This won't persist across restarts but helps with current session
-            os.environ['GOOGLE_CREDENTIALS_JSON'] = json.dumps(creds_data)
-            logger.info("Credentials also set as environment variable")
         except Exception as e:
-            logger.warning(f"Could not set env variable: {e}")
+            logger.error(f"Error calling Anthropic API: {e}")
+            return None
+    
+    def create_affinity_deal(self, founder_info, document_title):
+        """Create deal in Affinity via web service"""
+        logger.info("💼 Creating Affinity deal...")
+        
+        try:
+            # Prepare deal data
+            company_name = founder_info.get('company_name', 'Unknown Company')
+            founder_name = founder_info.get('founder_name', 'Unknown Founder')
             
-    except Exception as e:
-        logger.error(f"Failed to save credentials: {e}")
+            deal_name = f"{company_name} - {founder_name}"
+            
+            deal_data = {
+                'name': deal_name,
+                'stage': 'Prospecting',
+                'entity_id': None  # Will be created if needed
+            }
+            
+            # Call web service API
+            result = self.web_api_call('/api/affinity/deals', method='POST', data=deal_data)
+            
+            if result is None:
+                logger.error("Failed to create Affinity deal")
+                return None
+            
+            deal_id = result.get('deal_id')
+            logger.info(f"✅ Created Affinity deal: {deal_id}")
+            return deal_id
+            
+        except Exception as e:
+            logger.error(f"Error creating Affinity deal: {e}")
+            return None
+    
+    def generate_follow_up_email(self, founder_info):
+        """Generate follow-up email using Claude"""
+        logger.info("📧 Generating follow-up email...")
+        
+        try:
+            founder_name = founder_info.get('founder_name', 'there')
+            company_name = founder_info.get('company_name', 'your company')
+            summary = founder_info.get('summary', 'our recent conversation')
+            
+            prompt = f"""
+Write a professional follow-up email to a founder after a VC meeting.
 
-def load_credentials():
-    """Load credentials from persistent storage"""
-    try:
-        # Try persistent storage first
-        credentials_file = '/opt/render/project/data/google_drive_token.json'
-        
-        if os.path.exists(credentials_file):
-            with open(credentials_file, 'r') as f:
-                return json.load(f)
-        
-        # Fallback: try current directory
-        if os.path.exists('google_drive_token.json'):
-            with open('google_drive_token.json', 'r') as f:
-                return json.load(f)
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Failed to load credentials: {e}")
-        return None
+Founder: {founder_name}
+Company: {company_name}
+Meeting Summary: {summary}
 
-def load_activity_stats():
-    """Load activity statistics"""
+Please write a warm, professional follow-up email that:
+1. Thanks them for their time
+2. References something specific from the conversation
+3. Expresses continued interest
+4. Suggests next steps
+5. Keeps it concise (3-4 paragraphs max)
+
+Format as a proper email with subject line.
+"""
+            
+            message = self.anthropic.messages.create(
+                model="claude-3-5-haiku-20241022",
+                max_tokens=800,
+                messages=[{
+                    "role": "user",
+                    "content": prompt
+                }]
+            )
+            
+            email_content = message.content[0].text
+            logger.info("✅ Generated follow-up email")
+            return email_content
+            
+        except Exception as e:
+            logger.error(f"Error generating email: {e}")
+            return None
+    
+    def create_gmail_draft(self, email_content, founder_email):
+        """Create Gmail draft via web service"""
+        if not founder_email:
+            logger.warning("No founder email provided, skipping Gmail draft")
+            return None
+            
+        logger.info("📧 Creating Gmail draft...")
+        
+        try:
+            # Parse email content for subject and body
+            lines = email_content.split('\n')
+            subject_line = None
+            body_lines = []
+            
+            for i, line in enumerate(lines):
+                if line.lower().startswith('subject:'):
+                    subject_line = line[8:].strip()
+                elif subject_line is not None:
+                    body_lines.append(line)
+            
+            if not subject_line:
+                subject_line = "Following up on our conversation"
+            
+            body = '\n'.join(body_lines).strip()
+            
+            # Prepare email data
+            email_data = {
+                'to': founder_email,
+                'subject': subject_line,
+                'body': body
+            }
+            
+            # Call web service API
+            result = self.web_api_call('/api/google/gmail/draft', method='POST', data=email_data)
+            
+            if result is None:
+                logger.error("Failed to create Gmail draft")
+                return None
+            
+            draft_id = result.get('draft_id')
+            logger.info(f"✅ Created Gmail draft: {draft_id}")
+            return draft_id
+            
+        except Exception as e:
+            logger.error(f"Error creating Gmail draft: {e}")
+            return None
+    
+    def process_document(self, file_info):
+        """Process a single document"""
+        doc_id = file_info['id']
+        doc_name = file_info['name']
+        
+        logger.info(f"🔄 Processing document: {doc_name}")
+        
+        try:
+            # Get document content
+            doc_data = self.get_document_content(doc_id)
+            if not doc_data:
+                logger.error(f"Failed to get content for {doc_name}")
+                return False
+            
+            content = doc_data['content']
+            title = doc_data['title']
+            
+            if not content or len(content.strip()) < 100:
+                logger.warning(f"Document {doc_name} has insufficient content")
+                return False
+            
+            # Extract founder information
+            founder_info = self.extract_founder_info(content, title)
+            if not founder_info:
+                logger.error(f"Failed to extract founder info from {doc_name}")
+                return False
+            
+            # Create Affinity deal
+            deal_id = self.create_affinity_deal(founder_info, title)
+            
+            # Generate and create email draft
+            email_content = self.generate_follow_up_email(founder_info)
+            draft_id = None
+            if email_content:
+                founder_email = founder_info.get('founder_email')
+                draft_id = self.create_gmail_draft(email_content, founder_email)
+            
+            # Mark as processed
+            self.mark_document_processed(doc_id, {
+                'processed_at': datetime.utcnow().isoformat(),
+                'document_name': doc_name,
+                'founder_name': founder_info.get('founder_name'),
+                'company_name': founder_info.get('company_name'),
+                'affinity_deal_id': deal_id,
+                'gmail_draft_id': draft_id
+            })
+            
+            logger.info(f"✅ Successfully processed: {doc_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error processing document {doc_name}: {e}")
+            logger.error(traceback.format_exc())
+            return False
+    
+    def run_check_cycle(self):
+        """Run one check cycle"""
+        logger.info("🔄 Starting check cycle...")
+        
+        try:
+            # Get new documents
+            new_documents = self.get_new_documents()
+            
+            processed_count = 0
+            
+            for file_info in new_documents:
+                if self.process_document(file_info):
+                    processed_count += 1
+                
+                # Small delay between documents
+                time.sleep(5)
+            
+            # Update last check time
+            self.save_last_check()
+            
+            # Update activity stats
+            self.update_activity_stats(processed_count)
+            
+            logger.info(f"✅ Check cycle completed. Processed {processed_count} documents.")
+            
+        except Exception as e:
+            logger.error(f"Error in check cycle: {e}")
+            logger.error(traceback.format_exc())
+    
+    def load_processed_documents(self):
+        """Load list of processed document IDs"""
+        try:
+            if os.path.exists(self.processed_docs_file):
+                with open(self.processed_docs_file, 'r') as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            logger.error(f"Error loading processed documents: {e}")
+            return {}
+    
+    def mark_document_processed(self, doc_id, metadata):
+        """Mark document as processed"""
+        try:
+            processed_docs = self.load_processed_documents()
+            processed_docs[doc_id] = metadata
+            
+            with open(self.processed_docs_file, 'w') as f:
+                json.dump(processed_docs, f, indent=2)
+                
+        except Exception as e:
+            logger.error(f"Error marking document processed: {e}")
+    
+    def load_last_check(self):
+        """Load last check timestamp"""
+        try:
+            if os.path.exists(self.last_check_file):
+                with open(self.last_check_file, 'r') as f:
+                    data = json.load(f)
+                    return data.get('last_check')
+            else:
+                # First run: start from 1 hour ago to avoid processing all historical docs
+                one_hour_ago = (datetime.utcnow() - timedelta(hours=1)).isoformat() + 'Z'
+                logger.info(f"🆕 First run: setting last_check to 1 hour ago: {one_hour_ago}")
+                return one_hour_ago
+        except Exception as e:
+            logger.error(f"Error loading last check: {e}")
+            # Fallback: 1 hour ago
+            return (datetime.utcnow() - timedelta(hours=1)).isoformat() + 'Z'
+    
+    def save_last_check(self):
+        """Save current timestamp as last check"""
+        try:
+            data = {
+                'last_check': datetime.utcnow().isoformat() + 'Z'
+            }
+            with open(self.last_check_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving last check: {e}")
+    
+    def update_activity_stats(self, processed_count):
+        """Update activity statistics"""
+        try:
+            stats = {
+                'last_check': datetime.utcnow().isoformat(),
+                'processed_today': processed_count,
+                'deals_created': processed_count  # Simplified
+            }
+            
+            with open(self.activity_stats_file, 'w') as f:
+                json.dump(stats, f, indent=2)
+                
+        except Exception as e:
+            logger.error(f"Error updating activity stats: {e}")
+    
+    def run(self):
+        """Main worker loop"""
+        logger.info("🚀 VC Workflow Worker starting...")
+        logger.info(f"📊 Check interval: {self.config['CHECK_INTERVAL_MINUTES']} minutes")
+        logger.info(f"🌐 Web service URL: {self.web_service_url}")
+        
+        while True:
+            try:
+                self.run_check_cycle()
+                
+                # Wait for next check
+                sleep_seconds = self.config['CHECK_INTERVAL_MINUTES'] * 60
+                logger.info(f"😴 Sleeping for {self.config['CHECK_INTERVAL_MINUTES']} minutes...")
+                time.sleep(sleep_seconds)
+                
+            except KeyboardInterrupt:
+                logger.info("👋 Worker stopped by user")
+                break
+            except Exception as e:
+                logger.error(f"Unexpected error in worker loop: {e}")
+                logger.error(traceback.format_exc())
+                time.sleep(60)  # Wait 1 minute before retrying
+
+def main():
+    """Main entry point"""
     try:
-        stats_file = '/opt/render/project/data/activity_stats.json'
-        
-        if os.path.exists(stats_file):
-            with open(stats_file, 'r') as f:
-                return json.load(f)
-        
-        return {}
-        
+        worker = VCWorkflowWorker()
+        worker.run()
     except Exception as e:
-        logger.warning(f"Failed to load activity stats: {e}")
-        return {}
+        logger.error(f"Failed to start worker: {e}")
+        logger.error(traceback.format_exc())
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    main()
