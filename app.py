@@ -329,6 +329,56 @@ def api_credentials():
             'error': str(e)
         })
 
+@app.route('/api/google/documents/<document_id>/debug')
+def api_debug_document(document_id):
+    """Debug endpoint to see raw document structure"""
+    try:
+        creds_data = load_credentials()
+        if not creds_data:
+            return jsonify({'error': 'No Google credentials available'}), 500
+            
+        creds = Credentials(
+            token=creds_data['token'],
+            refresh_token=creds_data.get('refresh_token'),
+            token_uri=creds_data['token_uri'],
+            client_id=creds_data['client_id'],
+            client_secret=creds_data['client_secret'],
+            scopes=creds_data['scopes']
+        )
+        
+        docs_service = build('docs', 'v1', credentials=creds)
+        doc = docs_service.documents().get(documentId=document_id).execute()
+        
+        # Extract first few paragraphs for debugging
+        debug_paragraphs = []
+        for idx, element in enumerate(doc.get('body', {}).get('content', [])[:10]):
+            if 'paragraph' in element:
+                para_info = {
+                    'index': idx,
+                    'elements': []
+                }
+                for elem in element['paragraph'].get('elements', []):
+                    if 'textRun' in elem:
+                        text_run = elem['textRun']
+                        elem_info = {
+                            'text': text_run.get('content', ''),
+                            'has_link': 'link' in text_run.get('textStyle', {})
+                        }
+                        if elem_info['has_link']:
+                            elem_info['link_url'] = text_run['textStyle']['link'].get('url', '')
+                        para_info['elements'].append(elem_info)
+                debug_paragraphs.append(para_info)
+        
+        return jsonify({
+            'document_id': document_id,
+            'title': doc.get('title', 'Untitled'),
+            'debug_paragraphs': debug_paragraphs
+        })
+        
+    except Exception as e:
+        logger.error(f"Error debugging document {document_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/google/documents/<document_id>')
 def api_get_document(document_id):
     """API endpoint for worker to get Google Doc content"""
@@ -354,53 +404,104 @@ def api_get_document(document_id):
         emails_found = []
         in_invited_section = False
         invited_emails = []
+        current_section = "start"
         
-        for element in doc.get('body', {}).get('content', []):
+        logger.info(f"Starting document parsing for {document_id}")
+        logger.info(f"Document structure has {len(doc.get('body', {}).get('content', []))} elements")
+        
+        for idx, element in enumerate(doc.get('body', {}).get('content', [])):
             if 'paragraph' in element:
                 paragraph_text = ""
+                paragraph_elements = element['paragraph'].get('elements', [])
                 
-                for text_run in element['paragraph'].get('elements', []):
+                # Log paragraph info
+                if paragraph_elements:
+                    logger.debug(f"Paragraph {idx} has {len(paragraph_elements)} elements")
+                
+                for elem_idx, text_run in enumerate(paragraph_elements):
                     if 'textRun' in text_run:
                         text = text_run['textRun'].get('content', '')
                         paragraph_text += text
                         content += text
                         
+                        # Log text run details
+                        text_run_data = text_run['textRun']
+                        logger.debug(f"TextRun {elem_idx}: '{text.strip()}'")
+                        
                         # Check for hyperlinks
-                        text_style = text_run['textRun'].get('textStyle', {})
+                        text_style = text_run_data.get('textStyle', {})
                         if 'link' in text_style:
-                            url = text_style['link'].get('url', '')
+                            link_data = text_style['link']
+                            url = link_data.get('url', '')
+                            logger.info(f"Found link in text '{text.strip()}': {url}")
+                            
                             if url.startswith('mailto:'):
                                 email = url.replace('mailto:', '').split('?')[0]
                                 emails_found.append({
                                     'email': email,
                                     'text': text.strip(),
-                                    'in_invited': in_invited_section
+                                    'in_invited': in_invited_section,
+                                    'section': current_section
                                 })
                                 if in_invited_section:
                                     invited_emails.append(email)
-                                logger.info(f"Found email link: {text.strip()} -> {email}")
+                                logger.info(f"✅ Found email link: {text.strip()} -> {email} (in_invited={in_invited_section})")
+                            else:
+                                logger.info(f"Non-email link found: {url}")
+                        else:
+                            # Log if this looks like it should have a link
+                            if text.strip() and in_invited_section and 'Adarsh' not in text:
+                                logger.debug(f"Text in invited section without link: '{text.strip()}'")
                 
-                # Check if we're entering/leaving the Invited section
-                if 'Invited' in paragraph_text:
-                    in_invited_section = True
-                elif paragraph_text.strip() and in_invited_section:
-                    # If we hit a new non-empty paragraph after Invited, we're past it
-                    if 'Attachments' in paragraph_text or 'Meeting' in paragraph_text:
+                # Check if we're entering/leaving sections
+                para_text_stripped = paragraph_text.strip()
+                if para_text_stripped:
+                    logger.debug(f"Paragraph text: '{para_text_stripped[:100]}...'")
+                    
+                    if 'Invited' in paragraph_text:
+                        in_invited_section = True
+                        current_section = "invited"
+                        logger.info("📍 Entered INVITED section")
+                    elif in_invited_section and ('Attachments' in paragraph_text or 'Meeting' in paragraph_text):
                         in_invited_section = False
+                        current_section = "post-invited"
+                        logger.info("📍 Left INVITED section")
+        
+        # Log summary of findings
+        logger.info(f"📊 Email extraction summary:")
+        logger.info(f"  - Total emails found: {len(emails_found)}")
+        logger.info(f"  - Emails in invited section: {len(invited_emails)}")
+        logger.info(f"  - All emails: {[e['email'] for e in emails_found]}")
+        logger.info(f"  - Invited emails: {invited_emails}")
         
         # Find the first non-Adarsh email from invited section
         founder_email = None
         for email in invited_emails:
             if 'adarsh' not in email.lower():
                 founder_email = email
+                logger.info(f"✅ Selected founder email: {founder_email}")
                 break
+        
+        if not founder_email:
+            logger.warning("⚠️ No founder email found in invited section")
+            # Try to find any non-Adarsh email as fallback
+            for email_info in emails_found:
+                if 'adarsh' not in email_info['email'].lower():
+                    founder_email = email_info['email']
+                    logger.info(f"📧 Using fallback email (not from invited): {founder_email}")
+                    break
         
         return jsonify({
             'document_id': document_id,
             'title': doc.get('title', 'Untitled'),
             'content': content,
             'emails_found': emails_found,
-            'founder_email': founder_email
+            'founder_email': founder_email,
+            'debug_info': {
+                'total_emails': len(emails_found),
+                'invited_emails_count': len(invited_emails),
+                'sections_found': list(set(e.get('section', 'unknown') for e in emails_found))
+            }
         })
         
     except Exception as e:
