@@ -165,7 +165,8 @@ class VCWorkflowWorker:
             'title': result.get('title', 'Untitled'),
             'content': result.get('content', ''),
             'founder_email': result.get('founder_email'),  # Email extracted from Invited section
-            'emails_found': result.get('emails_found', [])
+            'emails_found': result.get('emails_found', []),
+            'founder_name': result.get('founder_name')  # Founder name from title
         }
     
     def extract_founder_info(self, content, document_title, doc_data):
@@ -174,16 +175,29 @@ class VCWorkflowWorker:
         
         try:
             extracted_email = doc_data.get('founder_email', 'Not found')
+            extracted_name = doc_data.get('founder_name', '')
+            
+            # Build context for Claude
+            email_context = ""
+            if extracted_email and extracted_email != 'Not found':
+                email_context = f"The founder's email is: {extracted_email}"
+            elif extracted_name:
+                email_context = f"The founder's name (from document title) is: {extracted_name}. Please look for their email in the document content or infer it from common patterns (firstname@company.com, etc.)"
+            else:
+                email_context = "No email was found automatically. Please extract it from the document content."
+            
             prompt = f"""
 Analyze this VC meeting note and extract key information about the founder and company.
 
-IMPORTANT: The founder's email has already been extracted from the document's Invited section.
-The email provided separately is: {extracted_email}
+IMPORTANT EMAIL EXTRACTION:
+{email_context}
 
 Additional context:
-- Look for the founder's name in the "Invited" section (first person who is NOT "Adarsh Bhatt")
-- Use the provided email for the founder_email field if available
-- If no email was extracted, try to find one in the document content
+- The founder is the first person in the "Invited" section who is NOT "Adarsh Bhatt"
+- If you can't find an email directly, look for:
+  - Email patterns in the document (founder@company.com)
+  - Company domain mentioned and combine with founder's first name
+  - Any email signatures or contact information
 
 Document Title: {document_title}
 
@@ -192,8 +206,8 @@ Meeting Notes:
 
 Please extract the following information in JSON format:
 {{
-    "founder_name": "Full name of the founder from the Invited section",
-    "founder_email": "Email address (use the provided email: {extracted_email})",
+    "founder_name": "Full name of the founder",
+    "founder_email": "Email address (must be found or inferred from the document)",
     "company_name": "Name of the company/startup",
     "industry": "Industry or sector",
     "stage": "Funding stage (seed, series A, etc.)",
