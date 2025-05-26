@@ -1043,16 +1043,16 @@ def api_create_affinity_deal():
             if meeting_notes and org_id:
                 logger.info(f"Step 3: Adding notes to organization {org_id}")
                 
+                # Affinity API format for notes
                 note_data = {
-                    'organization_id': org_id,
-                    'content': meeting_notes,
-                    'created_at': datetime.utcnow().isoformat() + 'Z'
+                    'entity_id': org_id,  # The organization ID
+                    'content': meeting_notes
                 }
                 
                 note_response = requests.post(
                     'https://api.affinity.co/notes',
                     headers=headers,
-                    json=note_data
+                    json=note_data  # Use JSON payload
                 )
                 
                 logger.info(f"Note creation: {note_response.status_code} - {note_response.text[:200]}...")
