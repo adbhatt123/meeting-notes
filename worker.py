@@ -112,17 +112,28 @@ class VCWorkflowWorker:
         files = result.get('files', [])
         logger.info(f"📄 Found {len(files)} documents to check")
         
-        # Filter out already processed documents
+        # Filter documents - check if new or modified since last processing
         processed_docs = self.load_processed_documents()
         new_files = []
         
         for file_info in files:
             doc_id = file_info['id']
+            doc_modified = file_info.get('modifiedTime', '')
+            
+            # Check if document is new or has been modified since last processing
             if doc_id not in processed_docs:
                 new_files.append(file_info)
                 logger.info(f"📄 New document: {file_info['name']}")
+            else:
+                # Check if document was modified after it was processed
+                processed_info = processed_docs[doc_id]
+                processed_at = processed_info.get('processed_at', '')
+                
+                if doc_modified > processed_at:
+                    new_files.append(file_info)
+                    logger.info(f"📝 Updated document: {file_info['name']} (modified: {doc_modified}, processed: {processed_at})")
         
-        logger.info(f"📄 {len(new_files)} new documents to process")
+        logger.info(f"📄 {len(new_files)} new/updated documents to process")
         return new_files
     
     def get_document_content(self, document_id):
@@ -360,7 +371,6 @@ Format as a proper email with subject line.
             
             # Mark as processed
             self.mark_document_processed(doc_id, {
-                'processed_at': datetime.utcnow().isoformat(),
                 'document_name': doc_name,
                 'founder_name': founder_info.get('founder_name'),
                 'company_name': founder_info.get('company_name'),
@@ -420,6 +430,8 @@ Format as a proper email with subject line.
         """Mark document as processed"""
         try:
             processed_docs = self.load_processed_documents()
+            # Include the current processing timestamp
+            metadata['processed_at'] = datetime.utcnow().isoformat() + 'Z'
             processed_docs[doc_id] = metadata
             
             with open(self.processed_docs_file, 'w') as f:
