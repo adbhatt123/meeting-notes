@@ -144,6 +144,23 @@ class VCWorkflowWorker:
             logger.error(f"Failed to get document content for {document_id}")
             return None
         
+        # Log what we received
+        logger.info(f"📄 Document API response:")
+        logger.info(f"  - Title: {result.get('title', 'Untitled')}")
+        logger.info(f"  - Content length: {len(result.get('content', ''))} chars")
+        logger.info(f"  - Founder email: {result.get('founder_email', 'NOT FOUND')}")
+        logger.info(f"  - Total emails found: {len(result.get('emails_found', []))}")
+        
+        if result.get('debug_info'):
+            logger.info(f"  - Debug info: {result['debug_info']}")
+        
+        # Log all emails found
+        emails = result.get('emails_found', [])
+        if emails:
+            logger.info("  - All emails found:")
+            for email_info in emails:
+                logger.info(f"    * {email_info.get('text', 'No text')} -> {email_info.get('email')} (invited: {email_info.get('in_invited', False)})")
+        
         return {
             'title': result.get('title', 'Untitled'),
             'content': result.get('content', ''),
@@ -375,6 +392,9 @@ Format as a proper email with subject line.
             if not content or len(content.strip()) < 100:
                 logger.warning(f"Document {doc_name} has insufficient content")
                 return False
+            
+            # Log the founder email we're passing to Claude
+            logger.info(f"🔍 Passing to Claude: founder_email = {doc_data.get('founder_email', 'None')}")
             
             # Extract founder information
             founder_info = self.extract_founder_info(content, title, doc_data)
