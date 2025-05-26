@@ -1043,22 +1043,83 @@ def api_create_affinity_deal():
             if meeting_notes and org_id:
                 logger.info(f"Step 3: Adding notes to organization {org_id}")
                 
-                # Affinity API format for notes
+                # Create note with proper associations
+                # According to API docs, notes need to be associated with entities
                 note_data = {
-                    'entity_id': org_id,  # The organization ID
-                    'content': meeting_notes
+                    'content': meeting_notes,
+                    'organization_ids': [int(org_id)]  # Ensure it's an integer
                 }
+                
+                logger.info(f"Attempting note creation with org_id={org_id}, type={type(org_id)}")
                 
                 note_response = requests.post(
                     'https://api.affinity.co/notes',
                     headers=headers,
-                    json=note_data  # Use JSON payload
+                    json=note_data
                 )
                 
-                logger.info(f"Note creation: {note_response.status_code} - {note_response.text[:200]}...")
+                # If that fails, try adding note as a field value instead
+                if note_response.status_code not in [200, 201]:
+                    logger.info("Note creation failed, trying field value approach...")
+                    
+                    # First, we need to find or create a notes field for the list
+                    fields_response = requests.get(
+                        f'https://api.affinity.co/lists/{list_id}/fields',
+                        headers=headers
+                    )
+                    
+                    if fields_response.status_code == 200:
+                        fields = fields_response.json()
+                        notes_field = None
+                        
+                        # Look for existing notes field
+                        for field in fields:
+                            if field.get('name', '').lower() in ['notes', 'meeting notes', 'description']:
+                                notes_field = field
+                                break
+                        
+                        # If we found a notes field, add value to it
+                        if notes_field and list_entry_id:
+                            field_value_data = {
+                                'field_id': notes_field['id'],
+                                'entity_id': list_entry_id,
+                                'value': meeting_notes
+                            }
+                            
+                            field_response = requests.post(
+                                f'https://api.affinity.co/lists/{list_id}/list-entries/{list_entry_id}/field-values',
+                                headers=headers,
+                                json=field_value_data
+                            )
+                            
+                            logger.info(f"Field value creation: {field_response.status_code} - {field_response.text[:200]}")
+                            note_response = field_response  # Use this response for final check
+                
+                logger.info(f"Note creation: {note_response.status_code} - {note_response.text}")
                 
                 if note_response.status_code not in [200, 201]:
                     logger.warning(f"Failed to add notes, but deal was created: {note_response.text}")
+                    
+                    # Try a third approach - add note directly to the list entry
+                    if note_response.status_code not in [200, 201] and list_entry_id:
+                        logger.info(f"Trying to add note to list entry {list_entry_id}...")
+                        
+                        # Some Affinity setups might need notes on the list entry itself
+                        note_data3 = {
+                            'parent_id': list_entry_id,
+                            'parent_type': 'list_entry',
+                            'content': meeting_notes
+                        }
+                        
+                        note_response = requests.post(
+                            f'https://api.affinity.co/lists/{list_id}/list-entries/{list_entry_id}/notes',
+                            headers=headers,
+                            json=note_data3
+                        )
+                        
+                        logger.info(f"List entry note attempt: {note_response.status_code} - {note_response.text}")
+                else:
+                    logger.info(f"✅ Successfully created note for organization {org_id}")
             
             return jsonify({
                 'deal_id': list_entry_id,
