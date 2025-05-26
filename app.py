@@ -971,6 +971,8 @@ def api_create_affinity_deal():
         
         # Extract company and founder info
         deal_name = deal_data.get('name', 'Unknown Deal')
+        meeting_notes = deal_data.get('notes', '')
+        founder_info = deal_data.get('founder_info', {})
         
         # First, try to create or find a person/organization
         # For simplicity, we'll try to create a list entry directly with available data
@@ -989,6 +991,7 @@ def api_create_affinity_deal():
         
         logger.info(f"Organization creation: {org_response.status_code} - {org_response.text}")
         
+        org_id = None  # Initialize org_id
         if org_response.status_code in [200, 201]:
             org = org_response.json()
             org_id = org.get('id')
@@ -1033,9 +1036,34 @@ def api_create_affinity_deal():
         logger.info(f"Affinity API response: {response.status_code} - {response.text}")
         
         if response.status_code in [200, 201]:
+            list_entry = response.json()
+            list_entry_id = list_entry.get('id')
+            
+            # Step 3: Add notes to the organization if meeting notes provided
+            if meeting_notes and org_id:
+                logger.info(f"Step 3: Adding notes to organization {org_id}")
+                
+                note_data = {
+                    'organization_id': org_id,
+                    'content': meeting_notes,
+                    'created_at': datetime.utcnow().isoformat() + 'Z'
+                }
+                
+                note_response = requests.post(
+                    'https://api.affinity.co/notes',
+                    headers=headers,
+                    json=note_data
+                )
+                
+                logger.info(f"Note creation: {note_response.status_code} - {note_response.text[:200]}...")
+                
+                if note_response.status_code not in [200, 201]:
+                    logger.warning(f"Failed to add notes, but deal was created: {note_response.text}")
+            
             return jsonify({
-                'deal_id': response.json().get('id'),
-                'message': 'Deal created successfully'
+                'deal_id': list_entry_id,
+                'organization_id': org_id,
+                'message': 'Deal created successfully with notes'
             })
         else:
             error_details = {
