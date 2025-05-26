@@ -349,18 +349,58 @@ def api_get_document(document_id):
         docs_service = build('docs', 'v1', credentials=creds)
         doc = docs_service.documents().get(documentId=document_id).execute()
         
-        # Extract text content
+        # Extract text content and emails
         content = ""
+        emails_found = []
+        in_invited_section = False
+        invited_emails = []
+        
         for element in doc.get('body', {}).get('content', []):
             if 'paragraph' in element:
+                paragraph_text = ""
+                
                 for text_run in element['paragraph'].get('elements', []):
                     if 'textRun' in text_run:
-                        content += text_run['textRun'].get('content', '')
+                        text = text_run['textRun'].get('content', '')
+                        paragraph_text += text
+                        content += text
+                        
+                        # Check for hyperlinks
+                        text_style = text_run['textRun'].get('textStyle', {})
+                        if 'link' in text_style:
+                            url = text_style['link'].get('url', '')
+                            if url.startswith('mailto:'):
+                                email = url.replace('mailto:', '').split('?')[0]
+                                emails_found.append({
+                                    'email': email,
+                                    'text': text.strip(),
+                                    'in_invited': in_invited_section
+                                })
+                                if in_invited_section:
+                                    invited_emails.append(email)
+                                logger.info(f"Found email link: {text.strip()} -> {email}")
+                
+                # Check if we're entering/leaving the Invited section
+                if 'Invited' in paragraph_text:
+                    in_invited_section = True
+                elif paragraph_text.strip() and in_invited_section:
+                    # If we hit a new non-empty paragraph after Invited, we're past it
+                    if 'Attachments' in paragraph_text or 'Meeting' in paragraph_text:
+                        in_invited_section = False
+        
+        # Find the first non-Adarsh email from invited section
+        founder_email = None
+        for email in invited_emails:
+            if 'adarsh' not in email.lower():
+                founder_email = email
+                break
         
         return jsonify({
             'document_id': document_id,
             'title': doc.get('title', 'Untitled'),
-            'content': content
+            'content': content,
+            'emails_found': emails_found,
+            'founder_email': founder_email
         })
         
     except Exception as e:
