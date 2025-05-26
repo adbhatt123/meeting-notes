@@ -397,13 +397,115 @@ def api_get_document(document_id):
         )
         
         docs_service = build('docs', 'v1', credentials=creds)
-        doc = docs_service.documents().get(documentId=document_id).execute()
+        drive_service = build('drive', 'v3', credentials=creds)
         
-        # Extract text content and emails
+        # Get document metadata first
+        doc = docs_service.documents().get(documentId=document_id).execute()
+        doc_title = doc.get('title', 'Untitled')
+        
+        # Export document as HTML to preserve links
+        try:
+            logger.info(f"Exporting document {document_id} as HTML to extract emails...")
+            request = drive_service.files().export_media(
+                fileId=document_id,
+                mimeType='text/html'
+            )
+            
+            # Download the HTML content
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+            
+            # Parse HTML content
+            html_content = fh.getvalue().decode('utf-8')
+            logger.info(f"Downloaded HTML content: {len(html_content)} bytes")
+            
+            # Debug: Log a sample of the HTML to see structure
+            if len(html_content) > 1000:
+                logger.debug(f"HTML sample (first 1000 chars): {html_content[:1000]}")
+            
+            # Look for Invited section in HTML
+            invited_index = html_content.find('Invited')
+            if invited_index != -1:
+                logger.info(f"Found 'Invited' at position {invited_index}")
+                # Get surrounding context
+                start = max(0, invited_index - 200)
+                end = min(len(html_content), invited_index + 500)
+                logger.info(f"Invited section context: {html_content[start:end]}")
+            
+            # Extract emails from HTML
+            class EmailExtractor(HTMLParser):
+                def __init__(self):
+                    super().__init__()
+                    self.emails = []
+                    self.current_text = ""
+                    self.in_invited = False
+                    self.invited_emails = []
+                    
+                def handle_starttag(self, tag, attrs):
+                    if tag == 'a':
+                        for attr, value in attrs:
+                            if attr == 'href' and value.startswith('mailto:'):
+                                email = value.replace('mailto:', '').split('?')[0]
+                                self.emails.append({
+                                    'email': email,
+                                    'text': self.current_text.strip(),
+                                    'in_invited': self.in_invited
+                                })
+                                if self.in_invited:
+                                    self.invited_emails.append(email)
+                                logger.info(f"Found email in HTML: {self.current_text.strip()} -> {email}")
+                    self.current_text = ""
+                    
+                def handle_data(self, data):
+                    self.current_text += data
+                    if 'Invited' in data:
+                        self.in_invited = True
+                        logger.info(f"Found Invited section in HTML: '{data.strip()}'")
+                    elif self.in_invited and ('Attachments' in data or 'Meeting' in data):
+                        self.in_invited = False
+                        logger.info(f"Left Invited section at: '{data.strip()}'")
+                        
+            parser = EmailExtractor()
+            parser.feed(html_content)
+            
+            # Also try regex as backup
+            email_pattern = r'href=["\']mailto:([^"\'>]+)["\']'
+            regex_emails = re.findall(email_pattern, html_content)
+            logger.info(f"Regex found emails: {regex_emails}")
+            
+            # Combine results
+            all_emails = parser.emails
+            invited_emails = parser.invited_emails
+            
+            # Add regex emails not already found
+            for email in regex_emails:
+                if not any(e['email'] == email for e in all_emails):
+                    all_emails.append({
+                        'email': email,
+                        'text': 'Found via regex',
+                        'in_invited': False
+                    })
+            
+            logger.info(f"Total emails from HTML: {len(all_emails)}")
+            logger.info(f"Invited section emails: {invited_emails}")
+            
+            emails_found = all_emails
+            
+        except Exception as e:
+            logger.error(f"Error exporting document as HTML: {e}")
+            logger.error(f"Error details: {type(e).__name__}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Fall back to regular parsing
+            all_emails = []
+            invited_emails = []
+            emails_found = []
+        
+        # Continue with regular text extraction for content
         content = ""
-        emails_found = []
-        in_invited_section = False
-        invited_emails = []
         current_section = "start"
         
         logger.info(f"Starting document parsing for {document_id}")
