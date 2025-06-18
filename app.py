@@ -331,8 +331,58 @@ def api_token_status():
             }
         }
         
-        # Check Google Drive token
-        if os.path.exists(token_file):
+        # Check if we have saved credentials that include all scopes
+        creds_data = load_credentials()
+        if creds_data:
+            try:
+                # Use the saved credentials for both Drive and Gmail
+                creds = Credentials(
+                    token=creds_data.get('token'),
+                    refresh_token=creds_data.get('refresh_token'),
+                    token_uri=creds_data.get('token_uri', 'https://oauth2.googleapis.com/token'),
+                    client_id=creds_data.get('client_id'),
+                    client_secret=creds_data.get('client_secret'),
+                    scopes=creds_data.get('scopes', [])
+                )
+                
+                # Update both statuses
+                status['google_drive']['token_exists'] = True
+                status['google_drive']['has_refresh_token'] = bool(creds.refresh_token)
+                status['google_drive']['expires_at'] = creds.expiry.isoformat() if creds.expiry else None
+                
+                status['gmail']['token_exists'] = True
+                status['gmail']['has_refresh_token'] = bool(creds.refresh_token)
+                status['gmail']['expires_at'] = creds.expiry.isoformat() if creds.expiry else None
+                
+                # Check if token needs refresh
+                if not creds.valid:
+                    if creds.expired and creds.refresh_token:
+                        creds.refresh(Request())
+                        # Update saved credentials
+                        creds_data['token'] = creds.token
+                        save_credentials(creds_data)
+                        
+                        status['google_drive']['valid'] = True
+                        status['google_drive']['refreshed'] = True
+                        status['gmail']['valid'] = True
+                        status['gmail']['refreshed'] = True
+                else:
+                    status['google_drive']['valid'] = True
+                    status['gmail']['valid'] = True
+                    
+                # Check if Gmail scope is included
+                if creds.scopes and 'https://www.googleapis.com/auth/gmail.compose' in creds.scopes:
+                    status['gmail']['scope_included'] = True
+                else:
+                    status['gmail']['scope_included'] = False
+                    status['gmail']['error'] = 'Gmail scope not included in credentials'
+                    
+            except Exception as e:
+                status['google_drive']['error'] = str(e)
+                status['gmail']['error'] = str(e)
+        
+        # Fallback to checking individual token files
+        elif os.path.exists(token_file):
             try:
                 creds = Credentials.from_authorized_user_file(token_file)
                 status['google_drive']['has_refresh_token'] = bool(creds.refresh_token)
