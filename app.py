@@ -9,6 +9,7 @@ import json
 import os
 import requests
 from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from datetime import datetime
@@ -306,6 +307,92 @@ def api_test():
         'timestamp': datetime.utcnow().isoformat(),
         'service': 'vc-workflow-automation'
     })
+
+@app.route('/api/token/status')
+def api_token_status():
+    """Check the status of Google credentials and tokens"""
+    try:
+        # Check for Google Drive token
+        token_file = 'token.json'
+        gmail_token_file = 'gmail_token.json'
+        
+        status = {
+            'google_drive': {
+                'token_exists': os.path.exists(token_file),
+                'valid': False,
+                'expires_at': None,
+                'has_refresh_token': False
+            },
+            'gmail': {
+                'token_exists': os.path.exists(gmail_token_file),
+                'valid': False,
+                'expires_at': None,
+                'has_refresh_token': False
+            }
+        }
+        
+        # Check Google Drive token
+        if os.path.exists(token_file):
+            try:
+                creds = Credentials.from_authorized_user_file(token_file)
+                status['google_drive']['has_refresh_token'] = bool(creds.refresh_token)
+                status['google_drive']['expires_at'] = creds.expiry.isoformat() if creds.expiry else None
+                
+                # Try to refresh if expired
+                if not creds.valid:
+                    if creds.expired and creds.refresh_token:
+                        creds.refresh(Request())
+                        # Save refreshed token
+                        with open(token_file, 'w') as f:
+                            f.write(creds.to_json())
+                        status['google_drive']['valid'] = True
+                        status['google_drive']['refreshed'] = True
+                else:
+                    status['google_drive']['valid'] = True
+            except Exception as e:
+                status['google_drive']['error'] = str(e)
+        
+        # Check Gmail token
+        if os.path.exists(gmail_token_file):
+            try:
+                with open(gmail_token_file, 'r') as f:
+                    gmail_data = json.load(f)
+                status['gmail']['has_refresh_token'] = 'refresh_token' in gmail_data
+                status['gmail']['expires_at'] = gmail_data.get('expiry')
+                
+                # Create credentials and check validity
+                creds = Credentials(
+                    token=gmail_data.get('token'),
+                    refresh_token=gmail_data.get('refresh_token'),
+                    token_uri=gmail_data.get('token_uri'),
+                    client_id=gmail_data.get('client_id'),
+                    client_secret=gmail_data.get('client_secret'),
+                    scopes=gmail_data.get('scopes')
+                )
+                
+                if not creds.valid and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                    # Save refreshed token
+                    with open(gmail_token_file, 'w') as f:
+                        f.write(creds.to_json())
+                    status['gmail']['valid'] = True
+                    status['gmail']['refreshed'] = True
+                else:
+                    status['gmail']['valid'] = creds.valid
+            except Exception as e:
+                status['gmail']['error'] = str(e)
+        
+        # Overall status
+        status['overall'] = {
+            'ready': status['google_drive']['valid'] and status['gmail']['valid'],
+            'message': 'All tokens valid' if (status['google_drive']['valid'] and status['gmail']['valid']) else 'Some tokens need attention'
+        }
+        
+        return jsonify(status)
+        
+    except Exception as e:
+        logger.error(f"Error checking token status: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/credentials')
 def api_credentials():
@@ -1165,6 +1252,27 @@ def save_credentials(creds_data):
                 
             except Exception as e:
                 logger.warning(f"Could not save to {location}: {e}")
+        
+        # Also save as token.json for GoogleDriveService
+        try:
+            # Format for google-auth library
+            token_data = {
+                'token': creds_data['token'],
+                'refresh_token': creds_data.get('refresh_token'),
+                'token_uri': creds_data['token_uri'],
+                'client_id': creds_data['client_id'],
+                'client_secret': creds_data['client_secret'],
+                'scopes': creds_data['scopes'],
+                'type': 'authorized_user',
+                'expiry': None  # Will be set on first use
+            }
+            
+            with open('token.json', 'w') as f:
+                json.dump(token_data, f, indent=2)
+            logger.info("Saved token.json for GoogleDriveService")
+            
+        except Exception as e:
+            logger.warning(f"Could not save token.json: {e}")
         
         # Also save as environment variable for worker access
         try:
